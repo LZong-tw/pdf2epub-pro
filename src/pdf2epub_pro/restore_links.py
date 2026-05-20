@@ -7,6 +7,7 @@ occurrence of that text in the markdown with `[text](uri)`.
 import argparse
 import ctypes
 import re
+from collections import Counter
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -88,9 +89,16 @@ def extract_links(pdf_path: Path):
 
 
 def restore(md_text: str, pairs):
+    # If the same single-word text appears in more than one PDF link
+    # annotation, it's almost certainly a section anchor / cross-reference
+    # being repeated, not a per-instance hyperlink. Reusing it as a needle
+    # against the markdown would over-link every prose occurrence.
+    text_counts = Counter(t for t, _ in pairs)
     seen = {}
     for txt, uri in pairs:
         if not _is_safe_key(txt):
+            continue
+        if " " not in txt.strip() and text_counts[txt] > 1:
             continue
         seen.setdefault(txt, uri)
     if not seen:
