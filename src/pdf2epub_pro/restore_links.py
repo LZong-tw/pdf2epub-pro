@@ -89,18 +89,29 @@ def extract_links(pdf_path: Path):
 
 
 def restore(md_text: str, pairs):
-    # If the same single-word text appears in more than one PDF link
-    # annotation, it's almost certainly a section anchor / cross-reference
-    # being repeated, not a per-instance hyperlink. Reusing it as a needle
-    # against the markdown would over-link every prose occurrence.
     text_counts = Counter(t for t, _ in pairs)
     seen = {}
     for txt, uri in pairs:
         if not _is_safe_key(txt):
             continue
-        if " " not in txt.strip() and text_counts[txt] > 1:
-            continue
         seen.setdefault(txt, uri)
+    if not seen:
+        return md_text, 0
+
+    # Prune single-word keys whose body match count blows past their PDF
+    # annotation count by more than 3×. The single-word "Resources" annotation
+    # appearing once in the PDF should not turn 327 prose occurrences of the
+    # word into the same hyperlink. Multi-word keys are precise enough to
+    # bypass this check.
+    for k in list(seen.keys()):
+        if " " in k.strip():
+            continue
+        pdf_count = text_counts.get(k, 1)
+        pat = re.compile(r"\b" + re.escape(k).replace(r"\ ", r"\s+") + r"\b",
+                         re.IGNORECASE)
+        body_count = sum(1 for _ in pat.finditer(md_text))
+        if body_count > pdf_count * 3:
+            del seen[k]
     if not seen:
         return md_text, 0
 
