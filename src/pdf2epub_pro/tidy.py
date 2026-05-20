@@ -144,6 +144,28 @@ def heal_list_gaps(lines):
     return out
 
 
+_FUNCTION_WORDS = frozenset({
+    "and", "or", "to", "the", "a", "an", "of", "in", "by",
+    "for", "on", "with", "from", "as", "at",
+})
+_HYPHEN_SPACE_RE = re.compile(r"\b([A-Za-z]+)-\s+([a-z][a-z]\w*)")
+
+
+def heal_hyphen_breaks(lines):
+    """Rejoin words PDF line wrap split as `prefix- suffix`.
+
+    Skips parallel constructions like "Over- or under-sizing" where the word
+    after the hyphen-space is a function word (and/or/to/...).
+    """
+    def repl(m):
+        prefix, suffix = m.group(1), m.group(2)
+        if suffix.lower() in _FUNCTION_WORDS:
+            return m.group(0)
+        return f"{prefix}-{suffix}"
+
+    return [_HYPHEN_SPACE_RE.sub(repl, line) for line in lines]
+
+
 def heal_broken_sentences(lines):
     out, i = [], 0
     while i < len(lines):
@@ -202,6 +224,22 @@ def demote_subsections_aws(lines):
 
 
 # -- Orchestrator ------------------------------------------------------------
+_AWS_CORPUS_FIXES = [
+    (re.compile(r"\bWellArchitected\b"), "Well-Architected"),
+]
+
+
+def apply_corpus_fixes(lines, ruleset):
+    if ruleset != "aws":
+        return lines
+    out = []
+    for line in lines:
+        for pat, repl in _AWS_CORPUS_FIXES:
+            line = pat.sub(repl, line)
+        out.append(line)
+    return out
+
+
 def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> str:
     lines = text.splitlines()
     lines = strip_toc(lines)
@@ -213,7 +251,9 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
         lines = promote_pillars_aws(lines)
         lines = demote_subsections_aws(lines)
     lines = heal_list_gaps(lines)
+    lines = heal_hyphen_breaks(lines)
     lines = heal_broken_sentences(lines)
+    lines = apply_corpus_fixes(lines, ruleset)
     return "\n".join(lines) + "\n"
 
 

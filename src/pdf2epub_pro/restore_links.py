@@ -15,9 +15,29 @@ import pypdfium2.raw as raw
 
 _MD_LINK_RE = re.compile(r"\[[^\]]+\]\([^)]+\)")
 
+# Short/common single-word link texts that cause false positives if used as
+# regex needles against general prose. Curated from observation on AWS
+# whitepapers; extend as you see new false matches.
+_STOPWORD_LINK_TEXTS = frozenset({
+    "how", "here", "see", "read", "view", "click", "use", "make",
+    "get", "visit", "learn", "this", "that", "these", "those", "some",
+    "small", "large", "more", "less", "many", "details", "section",
+    "overview", "summary", "above", "below", "next", "back",
+})
+
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _is_safe_key(key: str) -> bool:
+    norm = _norm(key)
+    if norm in _STOPWORD_LINK_TEXTS:
+        return False
+    # Single short word is too risky — too many incidental matches.
+    if " " not in norm and len(norm) < 6:
+        return False
+    return True
 
 
 def extract_links(pdf_path: Path):
@@ -70,6 +90,8 @@ def extract_links(pdf_path: Path):
 def restore(md_text: str, pairs):
     seen = {}
     for txt, uri in pairs:
+        if not _is_safe_key(txt):
+            continue
         seen.setdefault(txt, uri)
     if not seen:
         return md_text, 0
@@ -79,8 +101,13 @@ def restore(md_text: str, pairs):
     for k in keys:
         norm_to_uri.setdefault(_norm(k), seen[k])
 
+    # Word-boundary anchors on both sides prevent mid-word matches such as
+    # `pillar` matching inside `pillars` or `Config` inside `Configure`.
     parts = [re.escape(k).replace(r"\ ", r"\s+") for k in keys]
-    big_re = re.compile(r"(?<!\[)(" + "|".join(parts) + ")", re.IGNORECASE)
+    big_re = re.compile(
+        r"(?<!\[)\b(" + "|".join(parts) + r")\b",
+        re.IGNORECASE,
+    )
 
     count = 0
     out_lines = []
