@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdf2epub-pro"
+version = "0.1.0"
+description = "High-quality PDF→EPUB pipeline using Docling (ML) + Calibre. Restores PDF link annotations, fetches referenced web content into the EPUB as an offline appendix, and generates clean covers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Lim Un-tiong", email = "lzong.tw@gmail.com" }]
+keywords = ["pdf", "epub", "ebook", "docling", "calibre", "trafilatura"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Office/Business :: Office Suites",
+]
+dependencies = [
+    # ML PDF parser (provides the `docling` CLI we shell out to via docling-slim).
+    "docling-slim>=2.94",
+    "docling>=2.94",
+    "pypdfium2>=4.30",
+    # HTML→Markdown for embedded refs.
+    "trafilatura>=2.0",
+    "requests>=2.32",
+    # Cover generation.
+    "Pillow>=11.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/LZong-tw/pdf2epub-pro"
+Issues = "https://github.com/LZong-tw/pdf2epub-pro/issues"
+
+[project.scripts]
+pdf2epub-pro    = "pdf2epub_pro.cli:main"
+pdf2epub-split  = "pdf2epub_pro.split:main"
+pdf2epub-tidy   = "pdf2epub_pro.tidy:main"
+pdf2epub-links  = "pdf2epub_pro.restore_links:main"
+pdf2epub-refs   = "pdf2epub_pro.fetch_refs:main"
+pdf2epub-cover  = "pdf2epub_pro.make_cover:main"
+pdf2epub-build  = "pdf2epub_pro.md2epub:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf2epub_pro"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"share" = "share/pdf2epub_pro"

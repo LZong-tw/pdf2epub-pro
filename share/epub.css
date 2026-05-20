@@ -1,0 +1,37 @@
+/* base typography */
+body { font-family: Georgia, "Source Serif Pro", "Times New Roman", serif; line-height: 1.55; }
+p { margin: 0.6em 0; text-align: justify; hyphens: auto; }
+
+/* headings */
+h1, h2, h3, h4 { font-family: "Helvetica Neue", "Segoe UI", Arial, sans-serif; }
+h1 { font-weight: 700; font-size: 1.8em; margin-top: 2em; margin-bottom: 0.6em;
+     page-break-before: always; border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { font-weight: 600; font-size: 1.4em; margin-top: 1.6em; margin-bottom: 0.4em;
+     border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h3 { font-weight: 600; font-size: 1.15em; margin-top: 1.2em; color: #444; }
+h4 { font-weight: 600; font-size: 1em; color: #555; }
+
+/* images */
+img { max-width: 100%; height: auto; display: block; margin: 1em auto; }
+
+/* tables */
+table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.92em; }
+th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+th { background-color: #f5f5f5; font-weight: bold; }
+
+/* code & pre */
+code { font-family: Consolas, "Source Code Pro", Monaco, monospace;
+       background: #f5f5f5; padding: 0 4px; border-radius: 3px; font-size: 0.92em; }
+pre { background: #f5f5f5; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.9em; }
+pre code { background: transparent; padding: 0; }
+
+/* blockquote */
+blockquote { border-left: 4px solid #ddd; margin: 1em 0; padding: 0.4em 1em; color: #555; }
+
+/* lists */
+ul, ol { margin: 0.5em 0 0.5em 1.5em; }
+li { margin: 0.3em 0; }
+
+/* links */
+a { color: #0066c0; text-decoration: none; }
+a:hover { text-decoration: underline; }
