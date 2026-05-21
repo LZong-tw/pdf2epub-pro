@@ -116,7 +116,9 @@ def strip_chunk_dividers(lines):
     return [l for l in lines if l.strip() != "---"]
 
 
-_MD_LINK_NORM_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+# Use negative lookbehind to exclude image syntax `![alt](src)` — image
+# refs are local artifact paths that must NOT get a URL base prepended.
+_MD_LINK_NORM_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)\)")
 
 
 # PDF text extraction periodically drops the hyphen in well-known compound
