@@ -20,6 +20,8 @@ import argparse
 import re
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+
 # -- Generic patterns --------------------------------------------------------
 TOC_HEADING_RE = re.compile(r"^\s*##\s+Table of Contents\s*$", re.IGNORECASE)
 LIST_ITEM_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+")
@@ -234,22 +236,81 @@ def heal_intra_word_spaces(lines):
             for l in lines]
 
 
-# Docling / Trafilatura output frequently glues markdown link/bold syntax
-# onto the surrounding word with no space:
+# Docling / Trafilatura output frequently emits emphasis markers that
+# python-markdown's CommonMark-leaning parser refuses to recognize because
+# of CommonMark's "no flanking whitespace" rule on emphasis runs:
+#
+#     **CloudWatch ** is used        → the closing `**` has leading space,
+#                                       so the run doesn't close here and
+#                                       the bold extends into the next
+#                                       paragraph, eating prose alive.
+#     ** AWS Glue **                 → both sides padded; not recognized.
+#     __ AWS KMS __                  → same problem with underscores.
+#
+# We use markdown-it-py (a CommonMark parser with the same flanking
+# semantics as python-markdown) to VALIDATE every candidate fix:
+#
+#   1.  Find each `**X**` / `__X__` candidate via regex over the text.
+#   2.  Parse the original substring — count `strong_open` tokens.
+#   3.  Parse the inner-stripped form — count `strong_open` tokens.
+#   4.  Replace iff the stripped form produces *more* strong tokens than
+#       the original.  This guarantees we never replace a span that was
+#       already parsing correctly, and never replace with a form that
+#       still doesn't parse.
+#
+# This is "regex finds candidates; the parser is the oracle on whether
+# the fix actually fixes anything."  Strictly safer than the pure-regex
+# version: if markdown-it-py says the input already parses as strong,
+# we leave it alone; if neither the input nor the stripped form parses,
+# we still leave it alone (rather than silently mis-edit).
+_MD_PARSER = MarkdownIt("commonmark", {"breaks": False, "html": False})
+
+_EMPHASIS_CANDIDATE_RE = re.compile(r"(\*\*|__)([^\n]+?)\1")
+
+
+def _count_strong(text: str) -> int:
+    n = 0
+    for tok in _MD_PARSER.parse(text):
+        if tok.type == "inline" and tok.children:
+            n += sum(1 for c in tok.children if c.type == "strong_open")
+    return n
+
+
+def strip_emphasis_inner_space(lines):
+    """Normalize whitespace-padded **X** / __X__ runs that fail to tokenize
+    as emphasis under CommonMark.  See module-level comment for the
+    parser-validated algorithm.
+    """
+    def repl(m):
+        marker, inner = m.group(1), m.group(2)
+        stripped = inner.strip()
+        if not stripped or stripped == inner:
+            return m.group(0)
+        candidate = f"{marker}{stripped}{marker}"
+        if _count_strong(candidate) > _count_strong(m.group(0)):
+            return candidate
+        return m.group(0)
+
+    return [_EMPHASIS_CANDIDATE_RE.sub(repl, line) for line in lines]
+
+
+# Docling / Trafilatura also glues emphasis and link syntax onto the
+# surrounding word with no space:
 #   text](url)to fetch → text](url) to fetch
 #   word[link](url)    → word [link](url)
 #   **bold**word       → **bold** word
-# The substitutions below add a space at the seam while leaving punctuation
-# (.,;:?!) and start-of-line cases alone.
+#   word__bold__       → word __bold__
 _MD_ADJACENCY_RULES = [
     # Closing ) of a link followed by a letter or backtick
     (re.compile(r"(\]\([^)\s]+\))([A-Za-z`])"), r"\1 \2"),
     # Letter immediately preceding [link]
     (re.compile(r"([A-Za-z,])(\[[^\]]+\]\()"), r"\1 \2"),
-    # **bold**word
+    # **bold**word and word**bold**
     (re.compile(r"(\*\*[^*\n]+\*\*)([A-Za-z])"), r"\1 \2"),
-    # word**bold**
     (re.compile(r"([A-Za-z])(\*\*[^*\n]+\*\*)"), r"\1 \2"),
+    # __bold__word and word__bold__ (symmetric with ** above)
+    (re.compile(r"(__[^_\n]+__)([A-Za-z])"), r"\1 \2"),
+    (re.compile(r"([A-Za-z])(__[^_\n]+__)"), r"\1 \2"),
 ]
 
 
@@ -498,6 +559,9 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     lines = fix_digit_headings(lines)
     lines = un_glue_compounds(lines)
     lines = heal_intra_word_spaces(lines)
+    # Strip inner whitespace from emphasis runs BEFORE the adjacency pass,
+    # so the adjacency rules see well-formed `**X**` / `__X__` tokens.
+    lines = strip_emphasis_inner_space(lines)
     lines = space_markdown_adjacency(lines)
     lines = normalize_relative_links(lines)
     lines = apply_corpus_fixes(lines, ruleset)

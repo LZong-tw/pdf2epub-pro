@@ -13,6 +13,7 @@ from pdf2epub_pro.tidy import (
     promote_pillars_aws,
     space_markdown_adjacency,
     strip_chunk_dividers,
+    strip_emphasis_inner_space,
     strip_orphan_dashes,
     strip_orphan_page_numbers,
     strip_toc,
@@ -171,6 +172,45 @@ def test_space_markdown_adjacency_bold_seam():
     assert after_bold[0] == "use **bold** next"
     before_bold = space_markdown_adjacency(["pre**bold** suffix"])
     assert before_bold[0] == "pre **bold** suffix"
+
+
+def test_space_markdown_adjacency_underscore_bold_seam():
+    # REGRESSION: __X__ form was missing from adjacency rules, so
+    # `__AWS Key Management Service__The customer` ate the next word
+    # into the bold run.
+    after = space_markdown_adjacency(["use __KMS__then"])
+    assert after[0] == "use __KMS__ then"
+    before = space_markdown_adjacency(["pre__KMS__ suffix"])
+    assert before[0] == "pre __KMS__ suffix"
+
+
+# ----------------------------------------------------------- inner-space
+
+
+def test_strip_emphasis_inner_space_bold_asterisk():
+    # `**bold **` and `** bold **` and `** bold**` all unbalanced —
+    # CommonMark refuses to close them, the bold run runs forever.
+    src = [
+        "Use **CloudWatch ** to measure ML ops metrics.",
+        "Pair ** AWS Glue ** with ** Step Functions ** workflows.",
+        "And ** Lambda** for serverless triggers.",
+    ]
+    out = strip_emphasis_inner_space(src)
+    assert out[0] == "Use **CloudWatch** to measure ML ops metrics."
+    assert out[1] == "Pair **AWS Glue** with **Step Functions** workflows."
+    assert out[2] == "And **Lambda** for serverless triggers."
+
+
+def test_strip_emphasis_inner_space_bold_underscore():
+    src = ["Replace __ AWS KMS __ with the actual ARN."]
+    out = strip_emphasis_inner_space(src)
+    assert out[0] == "Replace __AWS KMS__ with the actual ARN."
+
+
+def test_strip_emphasis_inner_space_leaves_clean_bold_alone():
+    src = ["Use **CloudWatch** for monitoring; __KMS__ for encryption."]
+    out = strip_emphasis_inner_space(src)
+    assert out == src
 
 
 # ------------------------------------------------------------------ link norm

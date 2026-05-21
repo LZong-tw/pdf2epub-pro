@@ -36,6 +36,10 @@ dependencies = [
     "Pillow>=11.0",
     # L3 llmdiff: parse EPUB XHTML to locate matching chunks.
     "lxml>=5.0",
+    # tidy: parse markdown via a real CommonMark parser so we can VALIDATE
+    # emphasis-normalization fixes against the same semantics python-markdown
+    # uses, instead of relying on regex heuristics that miss edge cases.
+    "markdown-it-py>=3.0",
 ]
 
 [project.optional-dependencies]
