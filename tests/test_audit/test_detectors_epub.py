@@ -15,8 +15,12 @@ from pdf2epub_pro.audit.detectors_epub import (
     BrokenInternalAnchorDetector,
     DuplicateIdDetector,
     EmptySpineItemDetector,
+    ExternalHrefDensityDetector,
     HeadingDepthJumpDetector,
+    HeadingTextDuplicationDetector,
+    ImageAltEmptyDetector,
     InvalidIdDetector,
+    OpfManifestSpineConsistencyDetector,
     RelativeHrefSkeletonDetector,
 )
 
@@ -219,3 +223,263 @@ def test_empty_spine_item_skips_known_meta_files(tmp_path: Path):
         "OEBPS/nav.xhtml": _xhtml(""),
     })
     assert list(EmptySpineItemDetector().run(epub)) == []
+
+
+# -- 21. Image alt empty ---------------------------------------------------
+def test_image_alt_missing_positive(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<p><img src="x.png"/></p>'),
+    })
+    findings = list(ImageAltEmptyDetector().run(epub))
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert "no alt" in findings[0].message
+    assert findings[0].extra["alt_missing"] is True
+
+
+def test_image_alt_empty_string_positive(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<p><img src="x.png" alt=""/></p>'),
+    })
+    findings = list(ImageAltEmptyDetector().run(epub))
+    assert len(findings) == 1
+    assert "empty alt" in findings[0].message
+    assert findings[0].extra["alt_missing"] is False
+
+
+def test_image_alt_present_negative(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml(
+            '<p><img src="x.png" alt="A diagram of the pipeline"/></p>'
+        ),
+    })
+    assert list(ImageAltEmptyDetector().run(epub)) == []
+
+
+def test_image_alt_skips_decorative_role(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml(
+            '<p><img src="bullet.png" role="presentation"/></p>'
+        ),
+    })
+    assert list(ImageAltEmptyDetector().run(epub)) == []
+
+
+def test_image_alt_skips_icon_src(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<p><img src="icons/check.png"/></p>'),
+    })
+    assert list(ImageAltEmptyDetector().run(epub)) == []
+
+
+# -- 22. Heading text duplication ------------------------------------------
+def test_heading_text_duplication_positive(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<h2>Foo widget configuration</h2><p>x</p>'),
+        "OEBPS/b.xhtml": _xhtml('<h2>Foo widget configuration</h2><p>y</p>'),
+    })
+    findings = list(HeadingTextDuplicationDetector().run(epub))
+    assert len(findings) == 1
+    assert findings[0].severity == "info"
+    assert "Foo widget configuration" in findings[0].message
+    assert set(findings[0].extra["files"]) == {"OEBPS/a.xhtml", "OEBPS/b.xhtml"}
+    assert findings[0].extra["level"] == 2
+
+
+def test_heading_text_duplication_allowlist(tmp_path: Path):
+    # "Overview" is allowlisted — must not fire even across 3 files.
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<h1>Overview</h1>'),
+        "OEBPS/b.xhtml": _xhtml('<h1>Overview</h1>'),
+        "OEBPS/c.xhtml": _xhtml('<h1>Overview</h1>'),
+    })
+    assert list(HeadingTextDuplicationDetector().run(epub)) == []
+
+
+def test_heading_text_duplication_single_file_negative(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<h2>Unique heading</h2>'),
+        "OEBPS/b.xhtml": _xhtml('<h2>Something different</h2>'),
+    })
+    assert list(HeadingTextDuplicationDetector().run(epub)) == []
+
+
+# -- 23. External href density ---------------------------------------------
+def _many_links(count: int, base: str = "https://example.com/") -> str:
+    return "".join(f'<p><a href="{base}{i}">link{i}</a></p>' for i in range(count))
+
+
+def test_external_href_density_positive(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/refs.xhtml": _xhtml(_many_links(60)),
+    })
+    findings = list(ExternalHrefDensityDetector().run(epub))
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert findings[0].extra["count"] == 60
+
+
+def test_external_href_density_negative(tmp_path: Path):
+    epub = _build_epub(tmp_path, {
+        "OEBPS/chapter.xhtml": _xhtml(_many_links(10)),
+    })
+    assert list(ExternalHrefDensityDetector().run(epub)) == []
+
+
+def test_external_href_density_ignores_internal(tmp_path: Path):
+    # 60 internal anchors — must NOT trigger an external-density warning.
+    body = "".join(f'<p><a href="other.xhtml#sec{i}">x</a></p>' for i in range(60))
+    epub = _build_epub(tmp_path, {
+        "OEBPS/refs.xhtml": _xhtml(body),
+    })
+    assert list(ExternalHrefDensityDetector().run(epub)) == []
+
+
+# -- 24. OPF manifest / spine consistency ----------------------------------
+def _build_opf_epub(
+    tmp_path: Path,
+    manifest_items: list[tuple[str, str, str | None]],
+    spine_idrefs: list[str],
+    files: dict[str, str],
+    opf_dir: str = "OEBPS",
+    name: str = "book.epub",
+) -> Path:
+    """Build an EPUB with a hand-crafted OPF in ``opf_dir/content.opf``.
+
+    ``manifest_items``: list of ``(id, href, properties_or_None)``.  href
+    is relative to ``opf_dir``.  ``spine_idrefs`` populates ``<spine>``.
+    ``files`` adds raw zip members verbatim.
+    """
+    out = tmp_path / name
+    opf_path = f"{opf_dir}/content.opf" if opf_dir else "content.opf"
+    container = (
+        '<?xml version="1.0"?>\n'
+        '<container version="1.0" '
+        'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n'
+        f'  <rootfiles><rootfile full-path="{opf_path}" '
+        'media-type="application/oebps-package+xml"/></rootfiles>\n'
+        '</container>\n'
+    )
+
+    def _item_xml(item_id, href, props):
+        attrs = f'id="{item_id}" href="{href}" media-type="application/xhtml+xml"'
+        if props:
+            attrs += f' properties="{props}"'
+        return f"    <item {attrs}/>"
+
+    manifest_xml = "\n".join(_item_xml(i, h, p) for i, h, p in manifest_items)
+    spine_xml = "\n".join(f'    <itemref idref="{i}"/>' for i in spine_idrefs)
+    opf = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" '
+        'unique-identifier="bookid">\n'
+        '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+        '    <dc:identifier id="bookid">x</dc:identifier>\n'
+        '    <dc:title>T</dc:title>\n'
+        '    <dc:language>en</dc:language>\n'
+        '  </metadata>\n'
+        '  <manifest>\n'
+        f'{manifest_xml}\n'
+        '  </manifest>\n'
+        '  <spine>\n'
+        f'{spine_xml}\n'
+        '  </spine>\n'
+        '</package>\n'
+    )
+
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(zipfile.ZipInfo("mimetype"), _MIMETYPE, zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr(opf_path, opf)
+        for member_path, content in files.items():
+            zf.writestr(member_path, content)
+    return out
+
+
+def test_opf_consistency_broken_spine_idref(tmp_path: Path):
+    # spine references "ghost" which is not in manifest.
+    epub = _build_opf_epub(
+        tmp_path,
+        manifest_items=[("c1", "c1.xhtml", None)],
+        spine_idrefs=["c1", "ghost"],
+        files={"OEBPS/c1.xhtml": _xhtml("<p>hi</p>")},
+    )
+    findings = list(OpfManifestSpineConsistencyDetector().run(epub))
+    kinds = [f.extra.get("kind") for f in findings]
+    assert "broken_spine" in kinds
+    assert any("ghost" in f.message for f in findings if f.extra.get("kind") == "broken_spine")
+
+
+def test_opf_consistency_missing_manifest_target(tmp_path: Path):
+    # manifest lists missing.xhtml but it's not in the zip.
+    epub = _build_opf_epub(
+        tmp_path,
+        manifest_items=[
+            ("c1", "c1.xhtml", None),
+            ("c2", "missing.xhtml", None),
+        ],
+        spine_idrefs=["c1", "c2"],
+        files={"OEBPS/c1.xhtml": _xhtml("<p>hi</p>")},
+    )
+    findings = list(OpfManifestSpineConsistencyDetector().run(epub))
+    kinds = [f.extra.get("kind") for f in findings]
+    assert "missing_manifest_target" in kinds
+    assert any(
+        "missing.xhtml" in f.message
+        for f in findings if f.extra.get("kind") == "missing_manifest_target"
+    )
+
+
+def test_opf_consistency_orphan_zip_file(tmp_path: Path):
+    # extras.xhtml is in the zip but not in the manifest.
+    epub = _build_opf_epub(
+        tmp_path,
+        manifest_items=[("c1", "c1.xhtml", None)],
+        spine_idrefs=["c1"],
+        files={
+            "OEBPS/c1.xhtml": _xhtml("<p>hi</p>"),
+            "OEBPS/extras.xhtml": _xhtml("<p>orphan</p>"),
+        },
+    )
+    findings = list(OpfManifestSpineConsistencyDetector().run(epub))
+    kinds = [f.extra.get("kind") for f in findings]
+    assert "orphan_file" in kinds
+    assert any("extras.xhtml" in f.message for f in findings if f.extra.get("kind") == "orphan_file")
+
+
+def test_opf_consistency_clean_epub_negative(tmp_path: Path):
+    # All three invariants satisfied — should report nothing.
+    epub = _build_opf_epub(
+        tmp_path,
+        manifest_items=[
+            ("nav", "nav.xhtml", "nav"),
+            ("c1", "c1.xhtml", None),
+        ],
+        spine_idrefs=["c1"],
+        files={
+            "OEBPS/nav.xhtml": _xhtml("<nav><ol><li><a href='c1.xhtml'>1</a></li></ol></nav>"),
+            "OEBPS/c1.xhtml": _xhtml("<p>hi</p>"),
+        },
+    )
+    assert list(OpfManifestSpineConsistencyDetector().run(epub)) == []
+
+
+def test_opf_consistency_nav_property_exempts_orphan(tmp_path: Path):
+    # nav.xhtml is in manifest with properties="nav" — it's NOT a spine
+    # item (no itemref) but should still NOT be flagged as orphan.
+    epub = _build_opf_epub(
+        tmp_path,
+        manifest_items=[
+            ("nav", "nav.xhtml", "nav"),
+            ("c1", "c1.xhtml", None),
+        ],
+        spine_idrefs=["c1"],
+        files={
+            "OEBPS/nav.xhtml": _xhtml("<nav/>"),
+            "OEBPS/c1.xhtml": _xhtml("<p>hi</p>"),
+        },
+    )
+    findings = list(OpfManifestSpineConsistencyDetector().run(epub))
+    # Should not flag nav.xhtml as orphan (it's in the manifest, so this
+    # is already covered) — but specifically guard against any flag.
+    assert findings == []

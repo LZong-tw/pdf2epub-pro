@@ -7,6 +7,7 @@ walks its xhtml spine items, and yields findings.  We use stdlib only
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter, defaultdict
 from html.parser import HTMLParser
@@ -34,6 +35,9 @@ class _CollectingParser(HTMLParser):
         self.ids: list[tuple[str, int]] = []         # (id_value, lineno)
         self.hrefs: list[tuple[str, int]] = []        # (href, lineno)
         self.headings: list[tuple[int, str, int]] = []  # (level, text, lineno)
+        # (alt_or_None, src_or_None, role_or_None, lineno) — alt is None when
+        # the attribute is missing entirely, "" when present but empty.
+        self.images: list[tuple[str | None, str | None, str | None, int]] = []
         self._current_heading: tuple[int, list[str], int] | None = None
         self.body_text_len: int = 0
         self._in_body = False
@@ -50,8 +54,17 @@ class _CollectingParser(HTMLParser):
             self.ids.append((ad["id"], line))
         if tag == "a" and "href" in ad and ad["href"] is not None:
             self.hrefs.append((ad["href"], line))
+        if tag == "img":
+            self.images.append(
+                (ad.get("alt"), ad.get("src"), ad.get("role"), line)
+            )
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._current_heading = (int(tag[1]), [], line)
+
+    def handle_startendtag(self, tag, attrs):
+        # XHTML self-closing form e.g. <img alt="x" src="y"/>. HTMLParser
+        # routes these through their own callback rather than start/end.
+        self.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag):
         if tag == "body":
@@ -326,15 +339,361 @@ class EmptySpineItemDetector(EpubDetector):
                     )
 
 
-# Counter is imported but exposing it from this module isn't useful;
-# silence the unused warning by re-exporting under __all__.
+# -- 21. Empty / missing image alt ------------------------------------------
+@register_epub_detector
+class ImageAltEmptyDetector(EpubDetector):
+    """``<img>`` whose ``alt`` attribute is missing or empty.
+
+    Accessibility: every non-decorative image needs an ``alt``.  We can't
+    perfectly tell decorative from informative without a human, so we err
+    on flagging.  Two cheap heuristics suppress the most common
+    decorative cases:
+
+      * ``role="presentation"`` or ``role="none"`` — the spec's explicit
+        decorative marker, treat as intentional.
+      * ``src`` ending in a recognizably icon-shaped name (``*-icon.*``,
+        ``icons/*``) — best-effort skip; override via subclass if too loose.
+    """
+    name = "image_alt_empty"
+    description = "Image element has empty or missing alt attribute"
+    default_severity = "warn"
+
+    _DECORATIVE_ROLES = frozenset({"presentation", "none"})
+    _ICON_HINT = re.compile(r"(?:^|/)icons?/|[-_]icon\.[a-z]+$", re.IGNORECASE)
+
+    def run(self, path: Path) -> Iterable[Finding]:
+        with zipfile.ZipFile(path) as zf:
+            for member in _xhtml_members(zf):
+                parser = _parse_member(zf, member)
+                for alt, src, role, line in parser.images:
+                    if alt is not None and alt != "":
+                        continue
+                    if role is not None and role.lower() in self._DECORATIVE_ROLES:
+                        continue
+                    if src is not None and self._ICON_HINT.search(src):
+                        continue
+                    missing = alt is None
+                    yield Finding(
+                        detector=self.name,
+                        severity=self.default_severity,
+                        file=member,
+                        line=line,
+                        message=(
+                            "img has no alt attribute" if missing
+                            else "img has empty alt=\"\""
+                        ),
+                        snippet=src[:160] if src else None,
+                        extra={"src": src, "alt_missing": missing},
+                    )
+
+
+# -- 22. Same heading text in many spine items -----------------------------
+@register_epub_detector
+class HeadingTextDuplicationDetector(EpubDetector):
+    """Same heading text appearing across multiple spine items.
+
+    Genuine signal: a heading like "Step 1: Configure" repeated verbatim
+    in 5 different chapters usually means the markdown splitter
+    fragmented one logical section, or a copy-paste defect.  False-
+    positive risk is high for legitimate generic headings ("Overview",
+    "Summary", …) so we keep this detector at ``info`` severity and
+    expose an allowlist + threshold for tuning.
+    """
+    name = "heading_text_duplication"
+    description = "Same heading text appears in multiple spine items"
+    default_severity = "info"
+
+    duplication_threshold = 2
+    allowlist = frozenset({
+        "Overview",
+        "References",
+        "Introduction",
+        "Summary",
+        "Conclusion",
+        "Appendix",
+        "Glossary",
+        "Contents",
+        "Table of Contents",
+    })
+
+    def run(self, path: Path) -> Iterable[Finding]:
+        # text -> { file -> level }
+        by_text: dict[str, dict[str, int]] = defaultdict(dict)
+        with zipfile.ZipFile(path) as zf:
+            for member in _xhtml_members(zf):
+                parser = _parse_member(zf, member)
+                for level, text, _ in parser.headings:
+                    norm = (text or "").strip()
+                    if not norm:
+                        continue
+                    if norm in self.allowlist:
+                        continue
+                    # First occurrence in this file wins for level reporting.
+                    by_text[norm].setdefault(member, level)
+        for text, file_levels in sorted(by_text.items()):
+            if len(file_levels) >= self.duplication_threshold:
+                files = sorted(file_levels.keys())
+                # Use the most common heading level seen for this text.
+                level_counts = Counter(file_levels.values())
+                top_level = level_counts.most_common(1)[0][0]
+                yield Finding(
+                    detector=self.name,
+                    severity=self.default_severity,
+                    file=files[0],
+                    line=None,
+                    message=(
+                        f"heading {text!r} appears in {len(files)} files"
+                    ),
+                    snippet=text[:160],
+                    extra={"files": files, "level": top_level},
+                )
+
+
+# -- 23. External-link density --------------------------------------------
+@register_epub_detector
+class ExternalHrefDensityDetector(EpubDetector):
+    """A single spine item with more external ``http(s)://`` hrefs than threshold.
+
+    Useful for spotting docs whose "references" or "see also" appendix has
+    swelled past readability, or for catching chunks where a link-fetch
+    appendix-merger glued too much content into one xhtml.
+    """
+    name = "external_href_density"
+    description = "Single spine item has more external hrefs than the threshold"
+    default_severity = "warn"
+
+    threshold = 50
+
+    _EXTERNAL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+    def run(self, path: Path) -> Iterable[Finding]:
+        with zipfile.ZipFile(path) as zf:
+            for member in _xhtml_members(zf):
+                parser = _parse_member(zf, member)
+                external_count = sum(
+                    1 for href, _ in parser.hrefs if self._EXTERNAL_RE.match(href)
+                )
+                if external_count > self.threshold:
+                    yield Finding(
+                        detector=self.name,
+                        severity=self.default_severity,
+                        file=member,
+                        line=None,
+                        message=(
+                            f"{external_count} external hrefs "
+                            f"(threshold {self.threshold})"
+                        ),
+                        snippet=None,
+                        extra={"count": external_count,
+                               "threshold": self.threshold},
+                    )
+
+
+# -- 24. OPF manifest/spine consistency -----------------------------------
+_OPF_NS = {
+    "opf": "http://www.idpf.org/2007/opf",
+    "container": "urn:oasis:names:tc:opendocument:xmlns:container",
+}
+
+
+def _find_opf_path(zf: zipfile.ZipFile) -> str | None:
+    try:
+        raw = zf.read("META-INF/container.xml")
+    except KeyError:
+        return None
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return None
+    rootfile = root.find(".//container:rootfile", _OPF_NS)
+    if rootfile is None:
+        # Some packagers omit the namespace; fall back to local-name search.
+        for el in root.iter():
+            if el.tag.rsplit("}", 1)[-1] == "rootfile":
+                rootfile = el
+                break
+    if rootfile is None:
+        return None
+    return rootfile.get("full-path")
+
+
+def _resolve_relative(base_dir: str, href: str) -> str:
+    """Join an OPF-relative href into a zip member path, collapsing ``..``."""
+    pieces = ((base_dir + "/" + href) if base_dir else href).split("/")
+    stack: list[str] = []
+    for p in pieces:
+        if p == ".." and stack:
+            stack.pop()
+        elif p and p != ".":
+            stack.append(p)
+    return "/".join(stack)
+
+
+@register_epub_detector
+class OpfManifestSpineConsistencyDetector(EpubDetector):
+    """OPF manifest / spine internal consistency check.
+
+    Verifies three invariants:
+
+      (a) every ``spine`` idref points at a manifest item (no dangling idref),
+      (b) every manifest item's ``href`` exists in the zip (no ghost item),
+      (c) every xhtml/html file in the zip is in the manifest (no orphan).
+
+    Orphans of class (c) are skipped when the manifest entry for some other
+    file flags it with one of the standard auxiliary properties
+    (``nav``, ``cover-image``, ``scripted``, ``mathml``, ``svg``) — those
+    are intentionally outside the main reading order.  Files matching
+    container/OPF/NCX themselves are always exempt.
+    """
+    name = "opf_manifest_spine_consistency"
+    description = (
+        "OPF manifest / spine inconsistency (orphan file, missing item, "
+        "or broken idref)"
+    )
+    default_severity = "error"
+
+    _AUX_PROPERTIES = frozenset({
+        "nav", "cover-image", "scripted", "mathml", "svg",
+    })
+    _EXEMPT_NAME_RE = re.compile(
+        r"^(?:mimetype|META-INF/.*|.*\.opf|.*\.ncx)$", re.IGNORECASE
+    )
+
+    def run(self, path: Path) -> Iterable[Finding]:
+        with zipfile.ZipFile(path) as zf:
+            opf_path = _find_opf_path(zf)
+            if opf_path is None:
+                yield Finding(
+                    detector=self.name,
+                    severity=self.default_severity,
+                    file="META-INF/container.xml",
+                    message="could not locate OPF rootfile",
+                )
+                return
+            try:
+                opf_raw = zf.read(opf_path)
+            except KeyError:
+                yield Finding(
+                    detector=self.name,
+                    severity=self.default_severity,
+                    file="META-INF/container.xml",
+                    message=f"OPF rootfile {opf_path!r} missing from zip",
+                )
+                return
+            try:
+                root = ET.fromstring(opf_raw)
+            except ET.ParseError as exc:
+                yield Finding(
+                    detector=self.name,
+                    severity=self.default_severity,
+                    file=opf_path,
+                    message=f"OPF is not well-formed XML: {exc!s}",
+                )
+                return
+
+            opf_dir = opf_path.rsplit("/", 1)[0] if "/" in opf_path else ""
+
+            # Walk manifest + spine without forcing a single namespace —
+            # match by local-name to survive default-namespace omissions.
+            manifest_items: dict[str, dict[str, str | None]] = {}
+            manifest_hrefs: set[str] = set()  # zip-relative
+            spine_idrefs: list[str] = []
+            for el in root.iter():
+                local = el.tag.rsplit("}", 1)[-1]
+                if local == "item" and el.get("id") is not None:
+                    item_id = el.get("id") or ""
+                    href = el.get("href")
+                    props = el.get("properties")
+                    if not item_id or href is None:
+                        continue
+                    zip_path = _resolve_relative(opf_dir, href)
+                    manifest_items[item_id] = {
+                        "href": href,
+                        "zip_path": zip_path,
+                        "properties": props,
+                    }
+                    manifest_hrefs.add(zip_path)
+                elif local == "itemref":
+                    idref = el.get("idref")
+                    if idref:
+                        spine_idrefs.append(idref)
+
+            zip_names = set(zf.namelist())
+
+            # (a) broken spine idref
+            for idref in spine_idrefs:
+                if idref not in manifest_items:
+                    yield Finding(
+                        detector=self.name,
+                        severity=self.default_severity,
+                        file=opf_path,
+                        message=f"broken spine idref {idref!r}",
+                        snippet=idref,
+                        extra={"kind": "broken_spine"},
+                    )
+
+            # (b) manifest href not in zip
+            for item_id, info in manifest_items.items():
+                if info["zip_path"] not in zip_names:
+                    yield Finding(
+                        detector=self.name,
+                        severity=self.default_severity,
+                        file=opf_path,
+                        message=(
+                            f"manifest href {info['href']!r} missing from zip"
+                        ),
+                        snippet=str(info["href"]),
+                        extra={"kind": "missing_manifest_target",
+                               "id": item_id},
+                    )
+
+            # (c) orphan xhtml/html in zip not referenced by manifest.
+            # Any manifest item carrying an aux property (nav etc.) is
+            # already considered legitimately outside the main spine
+            # walk — but it's the ORPHAN we're scanning for, so skip a
+            # file only if its own (or any) manifest entry mapping says
+            # so.  Cheapest correct way: collect the set of zip paths
+            # that any aux-property manifest entry points to and never
+            # treat them as orphans.
+            aux_zip_paths = {
+                info["zip_path"]
+                for info in manifest_items.values()
+                if info["properties"]
+                and any(
+                    p in self._AUX_PROPERTIES
+                    for p in info["properties"].split()
+                )
+            }
+            for name in sorted(zip_names):
+                if not name.lower().endswith((".xhtml", ".html", ".htm")):
+                    continue
+                if self._EXEMPT_NAME_RE.match(name):
+                    continue
+                if name in manifest_hrefs:
+                    continue
+                if name in aux_zip_paths:
+                    continue
+                yield Finding(
+                    detector=self.name,
+                    severity=self.default_severity,
+                    file=name,
+                    message=f"orphan zip file {name!r} not in manifest",
+                    snippet=name,
+                    extra={"kind": "orphan_file"},
+                )
+
+
 __all__ = [
     "BrokenInternalAnchorDetector",
     "DuplicateIdDetector",
     "EmptySpineItemDetector",
+    "ExternalHrefDensityDetector",
     "HeadingDepthJumpDetector",
+    "HeadingTextDuplicationDetector",
+    "ImageAltEmptyDetector",
     "InvalidIdDetector",
+    "OpfManifestSpineConsistencyDetector",
     "RelativeHrefSkeletonDetector",
 ]
 
-_ = Counter  # keep import — used by future detectors; explicit no-op so lint stays quiet
+_ = Counter  # keep import — used internally by HeadingTextDuplicationDetector
