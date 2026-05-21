@@ -16,7 +16,11 @@ from urllib.parse import urljoin
 import requests
 import trafilatura
 
-from .tidy import fix_digit_headings_text, strip_orphan_dashes
+from .tidy import (
+    fix_digit_headings_text,
+    space_markdown_adjacency,
+    strip_orphan_dashes,
+)
 
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -43,9 +47,29 @@ def _looks_like_code(text: str) -> bool:
         return True
     if re.search(r"(?m)^\s*[A-Za-z_][A-Za-z0-9_-]*\s*:\s*\S", text):
         return True  # key: value (YAML / properties)
-    if re.search(r"(?m)^\s*\$\s+\S", text) or re.search(r"\baws\s+\w+", text):
-        return True  # shell prompt or `aws <command>`
+    if re.search(r"(?m)^\s*\$\s+\S", text):
+        return True  # shell prompt
+    # Shell / SLURM / shebang directives — line starts with these and the
+    # source was almost certainly a `<pre><code>` block.
+    if re.search(r"(?m)^\s*#(?:SBATCH|PBS|!/)\b", text):
+        return True
+    if re.search(r"(?m)^\s*(?:aws|sudo|source|cd|export|srun|sbatch|"
+                 r"docker|kubectl|git|terraform|cdk|sam|npm|yarn)\s+\S", text):
+        return True
     return False
+
+
+# Lines like `#SBATCH -o foo.out` and `#!/bin/bash` look like shell / SLURM
+# directives. If they survive into the assembled markdown body unwrapped,
+# python-markdown turns them into H1 headings, hijacking the document
+# structure. Escape the leading '#' so markdown treats them as text.
+_SHELL_DIRECTIVE_LINE_RE = re.compile(
+    r"(?m)^(#(?:SBATCH|PBS|!/)[^\n]*)$"
+)
+
+
+def _escape_shell_directive_lines(body: str) -> str:
+    return _SHELL_DIRECTIVE_LINE_RE.sub(r"\\\1", body)
 
 
 def _fence_inline_code(body: str) -> str:
@@ -324,6 +348,7 @@ def fetch_one(url: str):
         body = _fix_broken_tables(body)
         body = _escape_placeholders_in_code(body)
         body = _fence_inline_code(body)
+        body = _escape_shell_directive_lines(body)
         return {"title": title, "url": url, "content": body, "cached": True}
 
     try:
@@ -367,6 +392,7 @@ def fetch_one(url: str):
     body = _fix_broken_tables(body)
     body = _escape_placeholders_in_code(body)
     body = _fence_inline_code(body)
+    body = _escape_shell_directive_lines(body)
     cp.write_text(f"<!-- title: {title} -->\n{body}", encoding="utf-8")
     time.sleep(DELAY)
     return {"title": title, "url": url, "content": body, "cached": False}
@@ -410,12 +436,16 @@ def fetch_refs(md_in: Path, md_out: Path, *,
         parts.append(f"\n## {r['title']} {{#ref-{idx:04d}}}\n")
         parts.append(f"\nSource: <{r['url']}>\n")
         parts.append(f"\n{_demote_headings(r['content'])}\n")
-    # Run the slug-safety + dash-stripping passes over the whole appendix
-    # too — Trafilatura sprinkles lone '-' lines and digit-led headings
-    # ('# 7 Pitfalls ...', '# 24×7 ...') that Calibre's parser otherwise
-    # turns into invalid XML IDs or spurious `<h2>-</h2>` elements.
+    # Run the slug-safety, dash-stripping, and adjacency passes over the
+    # whole assembled appendix.  Trafilatura sprinkles lone '-' lines,
+    # digit-led headings, and link/bold seams with no whitespace that
+    # markdown then renders as 'seeAmazon Bedrock Actions' style run-on
+    # text.  Applying tidy's pure-string passes here heals those cases
+    # without re-walking the main body.
     text = "".join(parts)
-    text = "\n".join(strip_orphan_dashes(text.splitlines()))
+    lines = strip_orphan_dashes(text.splitlines())
+    lines = space_markdown_adjacency(lines)
+    text = "\n".join(lines)
     md_out.write_text(fix_digit_headings_text(text), encoding="utf-8")
     print(f"[fetch-refs] wrote {md_out} with {len(refs)} embedded refs",
           flush=True)

@@ -3,9 +3,11 @@ from pdf2epub_pro.fetch_refs import (
     _absolutize_links,
     _demote_headings,
     _escape_placeholders_in_code,
+    _escape_shell_directive_lines,
     _fence_inline_code,
     _fix_broken_tables,
     _fix_mojibake,
+    _looks_like_code,
     make_filter,
 )
 
@@ -138,6 +140,33 @@ def test_escape_placeholders_in_code_handles_cli_angle_brackets():
     out = _escape_placeholders_in_code(body)
     assert "&lt;TOOLING_ACCOUNT_ID&gt;" in out
     assert "<TOOLING_ACCOUNT_ID>" not in out
+
+
+def test_looks_like_code_recognises_shell_directives():
+    # SLURM directive must be detected so multiline backticks containing
+    # them stay fenced instead of being unwrapped into prose with #SBATCH
+    # lines that markdown would parse as H1 headings.
+    assert _looks_like_code("#SBATCH -o video-gen-stage-1.out\nexport X=1")
+    assert _looks_like_code("#!/bin/bash\nset -e\nexport FOO=bar")
+    assert _looks_like_code("aws s3 ls s3://my-bucket\nsource ./venv/bin/activate")
+
+
+def test_escape_shell_directive_lines_prevents_h1_hijack():
+    body = (
+        "Some prose here.\n"
+        "#SBATCH -o video-gen-stage-1.out\n"
+        "#SBATCH --job-name=video-gen\n"
+        "More prose.\n"
+        "#!/bin/bash\n"
+    )
+    out = _escape_shell_directive_lines(body)
+    # The '#' is escaped so markdown won't treat the line as an H1.
+    assert "\\#SBATCH -o video-gen-stage-1.out" in out
+    assert "\\#SBATCH --job-name=video-gen" in out
+    assert "\\#!/bin/bash" in out
+    # Regular prose lines are untouched.
+    assert "Some prose here." in out
+    assert "More prose." in out
 
 
 # -------------------------------------------------------------------- filter
