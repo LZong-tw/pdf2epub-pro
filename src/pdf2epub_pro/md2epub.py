@@ -37,7 +37,7 @@ def md2epub(md_in: Path, epub_out: Path, *,
         # Enable python-markdown extras we need: pipe tables, fenced code
         # blocks (so trafilatura output with ``` / | renders correctly),
         # footnotes, abbreviations, smart-em-dashes, and definition lists.
-        "--md-extensions",
+        "--markdown-extensions",
         "tables,fenced_code,footnotes,abbr,smarty,def_list",
         "--level1-toc", "//*[local-name()='h1']",
         "--level2-toc", "//*[local-name()='h2']",
