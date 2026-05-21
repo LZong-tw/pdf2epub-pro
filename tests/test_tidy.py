@@ -184,6 +184,20 @@ def test_space_markdown_adjacency_underscore_bold_seam():
     assert before[0] == "pre __KMS__ suffix"
 
 
+def test_space_markdown_adjacency_does_not_pair_across_bolds():
+    # REGRESSION: a greedy `\*\*[^*\n]+\*\*` regex paired the CLOSE `**` of
+    # one bold with the OPEN `**` of the next, treating ` and ` between
+    # them as bold content and inserting a fake seam.  The `\S … \S`
+    # boundary on the inner pattern rejects that, leaving real adjacent
+    # bolds alone.  Symptom this protects against:
+    #     '**A**is, **B** and **C**' → '**A ** is, **B ** and ** C**'
+    src = ["**CloudWatch**is used, **AWS Glue** and **Step Functions** workflows."]
+    out = space_markdown_adjacency(src)
+    # Only the **CloudWatch**is seam should change (insert one space).
+    expected = "**CloudWatch** is used, **AWS Glue** and **Step Functions** workflows."
+    assert out[0] == expected
+
+
 # ----------------------------------------------------------- inner-space
 
 

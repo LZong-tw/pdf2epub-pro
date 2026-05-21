@@ -300,17 +300,30 @@ def strip_emphasis_inner_space(lines):
 #   word[link](url)    → word [link](url)
 #   **bold**word       → **bold** word
 #   word__bold__       → word __bold__
+# Each emphasis-aware rule requires the INNER content to start and end
+# with a non-whitespace character (`\S`).  This matters when a paragraph
+# contains multiple emphasis runs in series:
+#
+#     **A**is used and **B** and **C** workflows
+#                          ^^^^^^^^^^^^
+#       a regex of the form `\*\*[^*\n]+\*\*` greedily pairs the closing
+#       `**` of one run with the opening `**` of the next, treats the
+#       ` and ` in between as bold content, and "fixes" the seam — which
+#       both invents fake bold and immediately mis-pairs the markers,
+#       re-introducing the whitespace-padded shape CommonMark refuses
+#       to recognize.  The `\S … \S` boundary forces real well-formed
+#       runs only.
 _MD_ADJACENCY_RULES = [
     # Closing ) of a link followed by a letter or backtick
     (re.compile(r"(\]\([^)\s]+\))([A-Za-z`])"), r"\1 \2"),
     # Letter immediately preceding [link]
     (re.compile(r"([A-Za-z,])(\[[^\]]+\]\()"), r"\1 \2"),
     # **bold**word and word**bold**
-    (re.compile(r"(\*\*[^*\n]+\*\*)([A-Za-z])"), r"\1 \2"),
-    (re.compile(r"([A-Za-z])(\*\*[^*\n]+\*\*)"), r"\1 \2"),
+    (re.compile(r"(\*\*\S(?:[^*\n]*?\S)?\*\*)([A-Za-z])"), r"\1 \2"),
+    (re.compile(r"([A-Za-z])(\*\*\S(?:[^*\n]*?\S)?\*\*)"), r"\1 \2"),
     # __bold__word and word__bold__ (symmetric with ** above)
-    (re.compile(r"(__[^_\n]+__)([A-Za-z])"), r"\1 \2"),
-    (re.compile(r"([A-Za-z])(__[^_\n]+__)"), r"\1 \2"),
+    (re.compile(r"(__\S(?:[^_\n]*?\S)?__)([A-Za-z])"), r"\1 \2"),
+    (re.compile(r"([A-Za-z])(__\S(?:[^_\n]*?\S)?__)"), r"\1 \2"),
 ]
 
 
@@ -563,6 +576,10 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     # so the adjacency rules see well-formed `**X**` / `__X__` tokens.
     lines = strip_emphasis_inner_space(lines)
     lines = space_markdown_adjacency(lines)
+    # Belt-and-suspenders: re-run the emphasis cleanup after adjacency, in
+    # case a regex rule accidentally produced a whitespace-padded shape
+    # (it shouldn't with the `\S … \S` boundary, but this is cheap insurance).
+    lines = strip_emphasis_inner_space(lines)
     lines = normalize_relative_links(lines)
     lines = apply_corpus_fixes(lines, ruleset)
     return "\n".join(lines) + "\n"

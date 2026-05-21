@@ -503,6 +503,10 @@ def fetch_refs(md_in: Path, md_out: Path, *,
     text = "".join(parts)
     lines = strip_orphan_dashes(text.splitlines())
     lines = space_markdown_adjacency(lines)
+    # Same belt-and-suspenders as in tidy(): re-normalize emphasis after
+    # adjacency, defending against any whitespace-padded shape that slips
+    # through the regex rules' `\S` boundary.
+    lines = strip_emphasis_inner_space(lines)
     text = "\n".join(lines)
     md_out.write_text(fix_digit_headings_text(text), encoding="utf-8")
     print(f"[fetch-refs] wrote {md_out} with {len(refs)} embedded refs",
