@@ -18,6 +18,7 @@ import trafilatura
 
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _absolutize_links(body: str, source_url: str) -> str:
@@ -32,6 +33,22 @@ def _absolutize_links(body: str, source_url: str) -> str:
             return m.group(0)
         return f"[{text}]({urljoin(source_url, href)})"
     return _MD_LINK_RE.sub(repl, body)
+
+
+def _demote_headings(body: str, by: int = 2) -> str:
+    """Demote every markdown heading by N levels (capped at H6).
+
+    Trafilatura preserves the source page's heading hierarchy, which means
+    each fetched article ships with its own `# Title` H1.  Embedding 1000+
+    fetched articles thus injects 1000+ H1s into the EPUB — and with our
+    CSS rule `h1 { page-break-before: always }` that explodes into 1000+
+    split HTML files.  Demoting by 2 keeps the article's body H1 below
+    our wrapper `## Article title` H2, so only the main book has H1s.
+    """
+    def repl(m):
+        new_level = min(len(m.group(1)) + by, 6)
+        return f"{'#' * new_level} {m.group(2)}"
+    return _HEADING_RE.sub(repl, body)
 
 CACHE = Path.home() / ".cache" / "pdf2epub-refs"
 
@@ -155,7 +172,7 @@ def fetch_refs(md_in: Path, md_out: Path, *,
     for r in refs:
         parts.append(f"\n## {r['title']}\n")
         parts.append(f"\nSource: <{r['url']}>\n")
-        parts.append(f"\n{r['content']}\n")
+        parts.append(f"\n{_demote_headings(r['content'])}\n")
     md_out.write_text("".join(parts), encoding="utf-8")
     print(f"[fetch-refs] wrote {md_out} with {len(refs)} embedded refs",
           flush=True)
