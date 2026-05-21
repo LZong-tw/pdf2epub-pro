@@ -74,7 +74,9 @@ def extract_links(pdf_path: Path, *, no_cache: bool = False):
         cached = json.loads(cp.read_text(encoding="utf-8"))
         print(f"[restore-links] cache hit -> {len(cached)} pairs ({cp.name})",
               flush=True)
-        return [tuple(p) for p in cached]
+        # Re-run normalization so a fix applied after the cache was written
+        # (e.g. backslash->slash, relative->absolute) still takes effect.
+        return [(t, _normalize_uri(u)) for t, u in cached]
 
     print(f"[restore-links] scanning {pdf_path.name} ...", flush=True)
     pdf = pdfium.PdfDocument(str(pdf_path))
