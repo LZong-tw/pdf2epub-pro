@@ -64,26 +64,26 @@ def test_cli_text_format_reports_findings(tmp_path):
 
 def test_cli_json_output_is_parsable(tmp_path):
     md = tmp_path / "bad.md"
-    md.write_text("![x](https://docs.aws.amazon.com/a.png)\n", encoding="utf-8")
+    md.write_text("![x](https://example.com/a.png)\n", encoding="utf-8")
     rc, out = _run(["--md", str(md), "--json"])
     assert rc == 2
     data = json.loads(out)
     assert isinstance(data, list)
-    assert any(f["detector"] == "aws_image_link" for f in data)
+    assert any(f["detector"] == "external_image_link" for f in data)
 
 
 def test_cli_md_report_groups_by_detector(tmp_path):
     md = tmp_path / "bad.md"
     md.write_text(
         "#SBATCH --time=1\n\n"
-        "![x](https://docs.aws.amazon.com/a.png)\n\n"
+        "![x](https://example.com/a.png)\n\n"
         "## ·\n",
         encoding="utf-8",
     )
     rc, out = _run(["--md", str(md), "--md-report"])
     assert rc == 2
     assert "# pdf2epub-audit report" in out
-    assert "## `aws_image_link`" in out
+    assert "## `external_image_link`" in out
     assert "## `slurm_directive_heading`" in out
 
 
@@ -98,11 +98,11 @@ def test_cli_exit_code_warn_only_is_one(tmp_path):
 def test_cli_only_filter_runs_subset(tmp_path):
     md = tmp_path / "bad.md"
     md.write_text(
-        "#SBATCH --time=1\n\n![x](https://docs.aws.amazon.com/a.png)\n",
+        "#SBATCH --time=1\n\n![x](https://example.com/a.png)\n",
         encoding="utf-8",
     )
-    rc, out = _run(["--md", str(md), "--only", "aws_image_link"])
-    assert "aws_image_link" in out
+    rc, out = _run(["--md", str(md), "--only", "external_image_link"])
+    assert "external_image_link" in out
     assert "slurm_directive_heading" not in out
     # one detector still finds an error → exit 2
     assert rc == 2

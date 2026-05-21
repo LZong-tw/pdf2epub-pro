@@ -11,11 +11,11 @@ from pathlib import Path
 import pytest
 
 from pdf2epub_pro.audit.detectors_md import (
-    AwsImageLinkDetector,
+    ExternalImageLinkDetector,
     BulletAsHeadingDetector,
     CodeFenceFalsePositiveDetector,
     CodeFenceMissingDetector,
-    CompoundUnglueRegressionDetector,
+    GluedCompoundDetector,
     EmptyHeadingDetector,
     H1ExplosionDetector,
     HyphenBreakArtifactDetector,
@@ -87,23 +87,37 @@ def test_code_fence_missing_ignores_short_inline(tmp_path):
     assert list(CodeFenceMissingDetector().run(_write(tmp_path, src))) == []
 
 
-# -- 4. AWS image link -----------------------------------------------------
-def test_aws_image_link_positive(tmp_path):
-    src = "![diagram](https://docs.aws.amazon.com/images/foo.png)\n"
-    findings = list(AwsImageLinkDetector().run(_write(tmp_path, src)))
+# -- 4. External (remote) image link --------------------------------------
+def test_external_image_link_positive(tmp_path):
+    src = "![diagram](https://example.com/images/foo.png)\n"
+    findings = list(ExternalImageLinkDetector().run(_write(tmp_path, src)))
     assert len(findings) == 1
     assert findings[0].severity == "error"
 
 
-def test_aws_image_link_negative_local(tmp_path):
+def test_external_image_link_negative_local(tmp_path):
     src = "![diagram](images/foo.png)\n"
-    assert list(AwsImageLinkDetector().run(_write(tmp_path, src))) == []
+    assert list(ExternalImageLinkDetector().run(_write(tmp_path, src))) == []
 
 
-def test_aws_image_link_negative_normal_anchor(tmp_path):
-    # Plain `[text](aws-url)` is NOT an image — must not trigger.
-    src = "[See diagram](https://docs.aws.amazon.com/page.html)\n"
-    assert list(AwsImageLinkDetector().run(_write(tmp_path, src))) == []
+def test_external_image_link_negative_normal_anchor(tmp_path):
+    # Plain `[text](http-url)` is NOT an image — must not trigger.
+    src = "[See diagram](https://example.com/page.html)\n"
+    assert list(ExternalImageLinkDetector().run(_write(tmp_path, src))) == []
+
+
+def test_external_image_link_host_pattern_override(tmp_path):
+    # Custom subclass narrowing to one host should ignore other hosts.
+    class StrictDetector(ExternalImageLinkDetector):
+        host_pattern = r"https?://only-this-host\.example/[^)\s]+"
+
+    src = (
+        "![a](https://only-this-host.example/x.png)\n"
+        "![b](https://other-host.example/y.png)\n"
+    )
+    findings = list(StrictDetector().run(_write(tmp_path, src)))
+    assert len(findings) == 1
+    assert "only-this-host" in findings[0].snippet
 
 
 # -- 5. Nested-bracket relative link ---------------------------------------
@@ -175,19 +189,40 @@ def test_hyphen_break_artifact_negative_unknown_compound(tmp_path):
     assert list(HyphenBreakArtifactDetector().run(_write(tmp_path, src))) == []
 
 
-# -- 10. Compound un-glue regression --------------------------------------
+# -- 10. Glued compound regression ----------------------------------------
 @pytest.mark.parametrize("token", [
-    "realtime", "thirdparty", "wellarchitected", "finegrained",
+    "realtime", "thirdparty", "finegrained", "costeffective",
 ])
-def test_compound_unglue_regression_positive(tmp_path, token):
+def test_glued_compound_positive(tmp_path, token):
     src = f"We need a {token} system.\n"
-    findings = list(CompoundUnglueRegressionDetector().run(_write(tmp_path, src)))
+    findings = list(GluedCompoundDetector().run(_write(tmp_path, src)))
     assert len(findings) == 1
 
 
-def test_compound_unglue_regression_skips_url(tmp_path):
-    src = "See https://example.com/wellarchitected/intro.html for details.\n"
-    assert list(CompoundUnglueRegressionDetector().run(_write(tmp_path, src))) == []
+def test_glued_compound_skips_url(tmp_path):
+    # The default token list intentionally does NOT include 'wellarchitected'
+    # any more (that was AWS-corpus-specific noise); pick a token that IS in
+    # the default list and verify URL context exclusion still applies.
+    src = "See https://example.com/realtime/intro.html for details.\n"
+    assert list(GluedCompoundDetector().run(_write(tmp_path, src))) == []
+
+
+def test_glued_compound_tokens_overridable(tmp_path):
+    class FooDetector(GluedCompoundDetector):
+        tokens = ("foobarbaz",)
+
+    src = "Avoid foobarbaz in prose. realtime is not in this list.\n"
+    findings = list(FooDetector().run(_write(tmp_path, src)))
+    assert len(findings) == 1
+    assert "foobarbaz" in findings[0].message
+
+
+def test_glued_compound_empty_tokens_is_noop(tmp_path):
+    class EmptyDetector(GluedCompoundDetector):
+        tokens = ()
+
+    src = "realtime thirdparty finegrained should not fire.\n"
+    assert list(EmptyDetector().run(_write(tmp_path, src))) == []
 
 
 # -- 11. H1 explosion ------------------------------------------------------

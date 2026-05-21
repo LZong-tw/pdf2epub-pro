@@ -163,26 +163,39 @@ class CodeFenceMissingDetector(MarkdownDetector):
                         break
 
 
-# -- 4. Image-link with AWS docs base --------------------------------------
+# -- 4. External (remote) image link --------------------------------------
 @register_md_detector
-class AwsImageLinkDetector(MarkdownDetector):
-    """``![alt](https://docs.aws.amazon.com/...)`` — images should be local."""
-    name = "aws_image_link"
-    description = "Image src points at docs.aws.amazon.com instead of a local artifact"
+class ExternalImageLinkDetector(MarkdownDetector):
+    """``![alt](https://...)`` — EPUBs should embed images locally.
+
+    An ``![X](http(s)://...)`` survives into the final EPUB as a remote
+    image reference: it breaks offline reading, hides behind the host's
+    availability, and indicates the artifact-extraction or link-rewriting
+    pass dropped the picture.
+
+    The default pattern flags *any* external image. To narrow the scope
+    (e.g. only one publisher's docs host), subclass and override
+    :attr:`host_pattern` with a stricter regex.
+    """
+    name = "external_image_link"
+    description = "Image src is a remote URL instead of a local artifact path"
     default_severity = "error"
 
-    _PAT = re.compile(r"!\[[^\]]*\]\((https?://docs\.aws\.amazon\.com/[^)\s]+)\)")
+    # Match any http(s) URL inside an image syntax.  Override in subclasses
+    # for tighter scoping (e.g. r"https?://docs\.example\.com/").
+    host_pattern = r"https?://[^)\s]+"
 
     def run(self, path: Path) -> Iterable[Finding]:
+        pat = re.compile(rf"!\[[^\]]*\]\(({self.host_pattern})\)")
         lines = _read_lines(path)
         for i, line in enumerate(lines):
-            for m in self._PAT.finditer(line):
+            for m in pat.finditer(line):
                 yield Finding(
                     detector=self.name,
                     severity=self.default_severity,
                     file=str(path),
                     line=i + 1,
-                    message="image src is an AWS docs URL, not a local artifact",
+                    message="image src is a remote URL, not a local artifact",
                     snippet=m.group(0)[:160],
                 )
 
@@ -347,31 +360,47 @@ class HyphenBreakArtifactDetector(MarkdownDetector):
                     )
 
 
-# -- 10. Compound un-glue regression --------------------------------------
+# -- 10. Glued compound regression ----------------------------------------
 @register_md_detector
-class CompoundUnglueRegressionDetector(MarkdownDetector):
-    """Bare glued tokens (``realtime``, ``wellarchitected`` …) in prose.
+class GluedCompoundDetector(MarkdownDetector):
+    """Bare glued compound tokens that should have been hyphenated/spaced.
 
-    Sentinels for ``un_glue_compounds`` failing or being bypassed.
+    PDFs often render compounds without their hyphens (``real-time`` →
+    ``realtime``).  ``tidy.un_glue_compounds`` reverses this for known
+    cases; a leftover bare token suggests the rule didn't fire.
+
+    The token list is :attr:`tokens` — override in subclasses or
+    per-instance for domain-specific vocabularies.  The default list is
+    a small starter set; consumers with arbitrary corpora should provide
+    their own list rather than relying on this default.
     """
     name = "compound_unglue_regression"
     description = "Glued compound token outside URL context"
     default_severity = "warn"
 
-    _TOKENS = (
+    # Conservative starter list — keep this short and override per-corpus.
+    tokens: tuple[str, ...] = (
         "realtime", "thirdparty", "finegrained", "costeffective",
-        "faulttolerant", "wellarchitected",
+        "faulttolerant",
     )
 
     def run(self, path: Path) -> Iterable[Finding]:
+        if not self.tokens:
+            return
         lines = _read_lines(path)
-        pat = re.compile(r"(?<![/\\.\-])\b(" + "|".join(self._TOKENS) + r")\b(?![/\\.\-])")
+        pat = re.compile(
+            r"(?<![/\\.\-])\b(" + "|".join(self.tokens) + r")\b(?![/\\.\-])"
+        )
         for i, line in enumerate(lines):
             for m in pat.finditer(line):
                 # Skip if inside an obvious URL/path slice.
                 # Cheap guard: a `/` exists within 20 chars on either side.
                 window = line[max(0, m.start() - 20):m.end() + 20]
-                if "://" in window or "/" + m.group(1) in window or m.group(1) + "/" in window:
+                if (
+                    "://" in window
+                    or "/" + m.group(1) in window
+                    or m.group(1) + "/" in window
+                ):
                     continue
                 yield Finding(
                     detector=self.name,
@@ -386,9 +415,15 @@ class CompoundUnglueRegressionDetector(MarkdownDetector):
 # -- 11. H1 explosion ------------------------------------------------------
 @register_md_detector
 class H1ExplosionDetector(MarkdownDetector):
-    """More than ``threshold`` H1s (AWS WAF = 6 pillars + title + appendix)."""
+    """More than :attr:`threshold` H1 headings in a single markdown file.
+
+    A document with dozens of H1s usually indicates a tidy / heading-
+    promotion rule over-fired and turned every section into a top-level
+    chapter.  Tune :attr:`threshold` per corpus — books with many genuine
+    top-level chapters can legitimately exceed the default.
+    """
     name = "h1_explosion"
-    description = "Too many H1 headings — pillar promotion likely over-fired"
+    description = "More H1 headings than the configured threshold"
     default_severity = "warn"
     threshold = 8
 
@@ -414,8 +449,8 @@ class H1ExplosionDetector(MarkdownDetector):
 class BulletAsHeadingDetector(MarkdownDetector):
     """``## ·`` / ``## •`` / ``## ●`` — bullet glyph promoted to heading.
 
-    ``tidy.demote_subsections_aws`` turns these into list items; survivors mean
-    a non-AWS ruleset or a pattern miss.
+    PDF extractors sometimes flag a bullet line as a heading; a survivor
+    in the final markdown means the cleanup pass missed the pattern.
     """
     name = "bullet_as_heading"
     description = "Bullet glyph (·, •, ●) used as the entire heading text"
