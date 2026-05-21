@@ -8,6 +8,7 @@ from pdf2epub_pro.fetch_refs import (
     _fix_broken_tables,
     _fix_mojibake,
     _looks_like_code,
+    _normalize_emphasis,
     make_filter,
 )
 
@@ -182,6 +183,30 @@ def test_escape_placeholders_in_code_leaves_autolinks_alone():
     out = _escape_placeholders_in_code(body)
     assert "<https://example.com>" in out
     assert "&lt;https" not in out
+
+
+def test_normalize_emphasis_fixes_trafilatura_padded_bold():
+    # REGRESSION: trafilatura extracts AWS docs HTML into markdown with
+    # `**X **` / `** X **` shapes that CommonMark refuses to recognise.
+    # The book-body tidy pass cleans these for the main markdown, but
+    # the appendix bodies that fetch_refs assembles bypass tidy
+    # entirely and went straight to Calibre — shipping ~5 broken bold
+    # paragraphs per book until _normalize_emphasis was wired into the
+    # per-ref post-extract pipeline.
+    body = (
+        "**CloudWatch ** is used to measure ML ops.  Pair "
+        "**AWS Glue ** with ** Step Functions ** workflows."
+    )
+    expected = (
+        "**CloudWatch** is used to measure ML ops.  Pair "
+        "**AWS Glue** with **Step Functions** workflows."
+    )
+    assert _normalize_emphasis(body) == expected
+
+
+def test_normalize_emphasis_preserves_already_clean_bold():
+    body = "Use **CloudWatch** for metrics; **AWS Glue** for ETL."
+    assert _normalize_emphasis(body) == body
 
 
 def test_escape_placeholders_in_code_skips_singleword_capital():

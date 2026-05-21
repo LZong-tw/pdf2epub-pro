@@ -151,3 +151,148 @@ def test_md2epub_pandoc_minimal_metadata(tmp_path):
         names = zf.namelist()
         assert "mimetype" in names
         assert any(n.endswith(".opf") for n in names)
+
+
+def test_md2epub_pandoc_ascii_identifiers_strips_unicode_slug(tmp_path):
+    """REGRESSION: pandoc default `markdown` reader produces slug IDs
+    that preserve Unicode characters (legitimate 'é' or mojibake 'â'),
+    which our audit (mirroring Calibre's stricter behavior) flags as
+    invalid_id.  The +ascii_identifiers extension is what keeps the
+    slugs ASCII-only without breaking internal href consistency.
+
+    Without that flag this test would surface non-ASCII bytes inside
+    `<section id="...">` for the Sulamérica heading.
+    """
+    md_in = tmp_path / "unicode.md"
+    md_in.write_text(
+        "# Sulamérica Seguros\n\nBody.\n\n## Routeâ 53 Test\n\nMore.\n",
+        encoding="utf-8",
+    )
+    epub_out = tmp_path / "unicode.epub"
+    mod.md2epub_pandoc(md_in, epub_out, title="Unicode Test")
+
+    with zipfile.ZipFile(epub_out) as zf:
+        # Walk every xhtml file's id="..." attributes
+        offenders = []
+        for n in zf.namelist():
+            if not n.lower().endswith((".xhtml", ".html")):
+                continue
+            text = zf.read(n).decode("utf-8", errors="replace")
+            import re
+            for m in re.finditer(r'id="([^"]+)"', text):
+                ident = m.group(1)
+                if any(ord(c) > 127 for c in ident):
+                    offenders.append((n, ident))
+
+    assert offenders == [], (
+        "non-ASCII characters present in EPUB id attributes despite "
+        f"+ascii_identifiers: {offenders!r}"
+    )
+
+
+def test_dedupe_epub_ids_renames_cross_file_duplicates_and_updates_hrefs(tmp_path):
+    """REGRESSION: pandoc's auto_identifiers disambiguation runs at AST
+    level but does NOT cover the bodymatter preamble chunk pandoc
+    synthesises from --metadata title.  That can leave two
+    `<section id="X">` elements in two XHTML files — a real EPUB-spec
+    violation.
+
+    `_dedupe_epub_ids` walks the EPUB post-write, picks a collision-
+    aware suffix (must not collide with pandoc's own `-1`, `-2`, …
+    forms), and updates any href pointing at the renamed (file, id)
+    pair.  Build a minimal EPUB exhibiting all three conditions, run
+    the function, and assert: only ONE file keeps the original id, the
+    other gets a fresh-suffix rename, and the href that targeted the
+    file-with-renamed-id is rewritten.
+    """
+    epub = tmp_path / "dupe.epub"
+    # Two xhtml files share id="dup".  Pandoc has already used the
+    # `-1` suffix for an unrelated heading in a.xhtml, so the dedupe
+    # function must pick `-2` (not `-1`) for the rename.
+    a_xhtml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>A</title></head>'
+        '<body>'
+        '<section id="dup"><h1>First Dup</h1></section>'
+        '<section id="dup-1"><h2>Pandoc-Suffixed</h2></section>'
+        '<p><a href="b.xhtml#dup">link into b</a></p>'
+        '</body></html>'
+    )
+    b_xhtml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>B</title></head>'
+        '<body>'
+        '<section id="dup"><h1>Second Dup</h1></section>'
+        '</body></html>'
+    )
+    container = (
+        '<?xml version="1.0"?>\n'
+        '<container version="1.0" '
+        'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+        '<rootfiles><rootfile full-path="content.opf" '
+        'media-type="application/oebps-package+xml"/></rootfiles>'
+        '</container>'
+    )
+    with zipfile.ZipFile(epub, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(zipfile.ZipInfo("mimetype"),
+                    "application/epub+zip", zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr("content.opf",
+                    '<?xml version="1.0"?><package/>')  # minimal stub
+        zf.writestr("a.xhtml", a_xhtml)
+        zf.writestr("b.xhtml", b_xhtml)
+
+    renamed = mod._dedupe_epub_ids(epub)
+    assert renamed == 1, "expected one cross-file dup rename"
+
+    with zipfile.ZipFile(epub) as zf:
+        a_out = zf.read("a.xhtml").decode("utf-8")
+        b_out = zf.read("b.xhtml").decode("utf-8")
+
+    # First occurrence (a.xhtml) keeps the original id.
+    assert 'id="dup"' in a_out
+    # Second occurrence (b.xhtml) is renamed.  Must NOT clobber the
+    # pre-existing `-1` form already living in a.xhtml.
+    assert 'id="dup"' not in b_out, "b.xhtml still has the original dup id"
+    assert 'id="dup-2"' in b_out, (
+        "b.xhtml's section id should be renamed to dup-2 to avoid "
+        "colliding with the pre-existing dup-1 in a.xhtml"
+    )
+    # The cross-file href that pointed at b.xhtml#dup must now point
+    # at b.xhtml#dup-2 so internal navigation survives.
+    assert 'href="b.xhtml#dup-2"' in a_out, (
+        "href targeting the renamed (file, id) pair was not updated"
+    )
+    # The same-file dup-1 (pandoc's own suffix) is untouched.
+    assert 'id="dup-1"' in a_out
+
+
+def test_dedupe_epub_ids_no_op_when_no_duplicates(tmp_path):
+    epub = tmp_path / "clean.epub"
+    container = (
+        '<?xml version="1.0"?>\n'
+        '<container version="1.0" '
+        'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+        '<rootfiles><rootfile full-path="content.opf" '
+        'media-type="application/oebps-package+xml"/></rootfiles>'
+        '</container>'
+    )
+    a = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>A</title></head>'
+        '<body><section id="alpha"><h1>A</h1></section></body></html>'
+    )
+    b = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>B</title></head>'
+        '<body><section id="bravo"><h1>B</h1></section></body></html>'
+    )
+    with zipfile.ZipFile(epub, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(zipfile.ZipInfo("mimetype"),
+                    "application/epub+zip", zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr("content.opf", '<?xml version="1.0"?><package/>')
+        zf.writestr("a.xhtml", a)
+        zf.writestr("b.xhtml", b)
+
+    assert mod._dedupe_epub_ids(epub) == 0

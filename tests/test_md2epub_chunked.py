@@ -270,6 +270,122 @@ def test_full_pipeline_produces_valid_epub(tmp_path: Path):
 
 
 @needs_calibre
+def test_body_images_referenced_in_markdown_land_in_epub(tmp_path: Path):
+    """REGRESSION: the chunked synthesizer used to render XHTML with
+    `<img src="artifacts/foo.png">` but never copy the actual PNG file
+    into the workdir nor add it to the OPF manifest.  Calibre's input
+    plugin then silently dropped every body image — the WAF benchmark
+    shipped with only the explicit `--cover` asset where the baseline
+    had 58.
+
+    Build a minimal fixture with two image references (one PNG, one
+    JPG) plus their actual files on disk, run the pipeline, and assert
+    BOTH images live inside the final EPUB.
+    """
+    from PIL import Image
+    artifacts = tmp_path / "fixture_artifacts"
+    artifacts.mkdir()
+    png_src = artifacts / "alpha.png"
+    jpg_src = artifacts / "bravo.jpg"
+    Image.new("RGB", (8, 8), color=(255, 0, 0)).save(png_src, "PNG")
+    Image.new("RGB", (8, 8), color=(0, 255, 0)).save(jpg_src, "JPEG")
+
+    md = tmp_path / "with-images.md"
+    md.write_text(
+        "\n".join([
+            "# Chapter One",
+            "",
+            "First image:",
+            "",
+            "![Alpha](fixture_artifacts/alpha.png)",
+            "",
+            "# Chapter Two",
+            "",
+            "Second image:",
+            "",
+            "![Bravo](fixture_artifacts/bravo.jpg)",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "with-images.epub"
+    md2epub_chunked(md, out, title="Image Test", authors="Tester", language="en")
+    assert out.exists()
+
+    with zipfile.ZipFile(out) as zf:
+        names = zf.namelist()
+        image_members = [n for n in names
+                         if n.lower().endswith((".png", ".jpg", ".jpeg"))]
+        # Both body images must appear in the EPUB (Calibre may rename
+        # the path during conversion, so match on the basename).
+        bases = {Path(n).name.lower() for n in image_members}
+        assert "alpha.png" in bases, f"alpha.png missing; got {bases!r}"
+        assert "bravo.jpg" in bases, f"bravo.jpg missing; got {bases!r}"
+        # OPF should list them in the manifest with image media-types.
+        opf_name = next(n for n in names if n.endswith(".opf"))
+        opf_text = zf.read(opf_name).decode("utf-8", errors="replace")
+        assert "image/png" in opf_text
+        assert "image/jpeg" in opf_text
+
+
+@needs_calibre
+def test_body_image_inside_fenced_block_is_not_silently_dropped(tmp_path: Path):
+    """REGRESSION: the chunker split at every line starting with `# `
+    regardless of fence state.  When AWS docs put an example playbook
+    template inside a ```fenced``` block — and that template starts
+    with a literal `# Playbook Title …` — the chunker treated that as
+    a real H1, miscarved the chunk, and markdown-it then wrapped the
+    rest of the fence (and any image references it contained) inside
+    `<pre><code>`.  The image walker correctly skipped them (they
+    weren't `<img>` tags) and the asset never made it into the EPUB.
+
+    Build that exact shape and assert the body image AFTER the fenced
+    template still lands in the EPUB.
+    """
+    from PIL import Image
+    artifacts = tmp_path / "fixture_artifacts"
+    artifacts.mkdir()
+    img_src = artifacts / "post-fence.png"
+    Image.new("RGB", (8, 8), color=(0, 0, 255)).save(img_src, "PNG")
+
+    md = tmp_path / "fenced.md"
+    md.write_text(
+        "\n".join([
+            "# Real Chapter",
+            "",
+            "Some intro.",
+            "",
+            "```",
+            "# Playbook Title ## Playbook Info | A | B | C",
+            "## Steps 1. step one",
+            "```",
+            "",
+            "Body resumes here:",
+            "",
+            "![PostFence](fixture_artifacts/post-fence.png)",
+            "",
+            "# Next Real Chapter",
+            "",
+            "Done.",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "fenced.epub"
+    md2epub_chunked(md, out, title="Fenced Test", authors="Tester", language="en")
+    assert out.exists()
+
+    with zipfile.ZipFile(out) as zf:
+        bases = {Path(n).name.lower() for n in zf.namelist()
+                 if n.lower().endswith((".png", ".jpg", ".jpeg"))}
+        assert "post-fence.png" in bases, (
+            f"image after a fenced fake-H1 was dropped; got {bases!r}"
+        )
+
+
+@needs_calibre
 def test_ids_round_trip_into_epub(tmp_path: Path):
     md = tmp_path / "fixture.md"
     md.write_text(

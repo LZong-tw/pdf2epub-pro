@@ -3,6 +3,40 @@
 A public PDF→EPUB conversion pipeline (Docling + Calibre). Repo:
 https://github.com/LZong-tw/pdf2epub-pro
 
+## Every bug fix ships with a regression test — non-negotiable
+
+This is a public package — silent regressions are not acceptable.
+Running the conversion on a real PDF and eyeballing the output is an
+**acceptance check**, not a substitute for an automated test.
+
+The rule: every commit that fixes a defect must add a regression test
+in the same commit.  No "I'll add the test later", no "I verified by
+hand on the WAF corpus".  Future refactors WILL break unwitnessed
+fixes.
+
+How to apply:
+
+- **Same commit** — the failing test (if pre-existing input could
+  produce it) plus the fix are paired.  Reviewers should be able to
+  `git revert` the fix line and watch the test fail.
+- **Smallest possible fixture** — inline string for markdown / xhtml,
+  on-the-fly `_build_epub()` for EPUB-level cases.  No on-disk
+  corpus dependencies.
+- **Name the bug in the test** — `test_X_does_not_Y` or a docstring
+  starting with `# REGRESSION:` plus a one-line description of what
+  shipped wrong without it.  Future-you needs to know WHY the test
+  exists when it gets in the way of a refactor.
+- **Commit message lists the new test names** so reviewers can
+  quickly verify coverage.
+- **Don't trust audit-count parity alone**.  `pdf2epub-audit`
+  measures the EPUB output; many defects (broken rendering inside
+  `<pre><code>`, dropped image references, fence-blind heading
+  splits) don't move the audit needle but DO degrade the artifact.
+
+If you find yourself thinking "this fix is too small / too obvious /
+too hard to test" — that's a signal to push harder on the test, not
+to skip it.
+
 ## This is a public package — generalize
 
 Anyone with arbitrary PDFs can install and use this. Do NOT hardcode
