@@ -16,6 +16,8 @@ from __future__ import annotations
 import base64
 import json
 import re
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +37,11 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 DEFAULT_MAX_TOKENS = 1024
+
+# Timeout for one ``claude -p`` / ``codex -p`` invocation. Large enough for
+# a vision model to read two PNGs and respond; short enough that a stuck
+# CLI doesn't hang the whole diff run.
+DEFAULT_CLI_TIMEOUT = 120
 
 
 @dataclass
@@ -100,6 +107,118 @@ def build_request(pdf_img: str | Path, epub_img: str | Path,
             }
         ],
     }
+
+
+def build_cli_prompt(pdf_img: str | Path, epub_img: str | Path) -> str:
+    """Build the single-string prompt fed to ``claude -p`` / ``codex -p``.
+
+    Both CLIs accept a prompt as one argument and can read local files when
+    the prompt references them by path — so we pass *absolute* paths and
+    let the CLI's native file-reading capability do the image ingest. No
+    base64 in this path; that's reserved for :func:`build_request`.
+    """
+    pdf_p = Path(pdf_img).resolve()
+    epub_p = Path(epub_img).resolve()
+    return (
+        "Compare these two image files of the same content:\n"
+        f"- PDF source: {pdf_p}\n"
+        f"- EPUB rendering: {epub_p}\n"
+        "\n"
+        "Identify any text that was dropped, mis-ordered, mis-formatted, "
+        "mis-labeled, or visually wrong in the EPUB version. Reply with ONLY "
+        "a JSON object in this exact shape — no prose, no markdown code "
+        "fences:\n"
+        "\n"
+        '{"findings": [{"severity": "error|warn|info", '
+        '"type": "missing_text|reordered|formatting|other", '
+        '"description": "..."}]}\n'
+        "\n"
+        'If the EPUB rendering matches the PDF, reply with: {"findings": []}'
+    )
+
+
+def _wrap_cli_response(text: str, model: str) -> dict[str, Any]:
+    """Wrap a CLI stdout payload in the Messages-API response shape.
+
+    Reusing the same wrapper means :func:`parse_findings` can consume CLI
+    output unchanged.
+    """
+    return {
+        "id": "cli",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+
+
+def _run_cli_backend(executable: str, prompt: str, model: str,
+                     *, timeout: int = DEFAULT_CLI_TIMEOUT) -> dict[str, Any]:
+    """Shared implementation for the ``claude -p`` and ``codex -p`` backends.
+
+    Behaviour:
+      * exit 0 → wrap stdout in a Messages-API response (caller parses).
+      * exit non-zero → log stderr, return an empty-findings reply so one
+        bad chunk does not abort the whole run.
+      * ``FileNotFoundError`` (CLI not on PATH) propagates so the
+        auto-select chain in :mod:`.cli` can fall through to the next
+        backend candidate.
+      * ``TimeoutExpired`` is logged and downgraded to empty findings.
+    """
+    try:
+        completed = subprocess.run(
+            [executable, "-p", prompt],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            encoding="utf-8",
+        )
+    except FileNotFoundError:
+        # Let the auto-select chain catch this and try the next backend.
+        raise
+    except subprocess.TimeoutExpired:
+        print(
+            f"[llmdiff] warning: {executable} -p timed out after "
+            f"{timeout}s; treating chunk as no-findings.",
+            file=sys.stderr,
+        )
+        return _wrap_cli_response(json.dumps({"findings": []}), model)
+
+    if completed.returncode != 0:
+        print(
+            f"[llmdiff] warning: {executable} -p exited "
+            f"{completed.returncode}; stderr: {completed.stderr[:500]!r}",
+            file=sys.stderr,
+        )
+        return _wrap_cli_response(json.dumps({"findings": []}), model)
+
+    # Tolerate trailing/leading whitespace; ``parse_findings`` already
+    # peels markdown fences and prose before the first ``{``.
+    return _wrap_cli_response((completed.stdout or "").strip(), model)
+
+
+def claude_cli_call_fn(req: dict[str, Any]) -> dict[str, Any]:
+    """``llm_call_fn`` that shells out to the local ``claude -p`` CLI.
+
+    Expects ``req["cli_prompt"]`` to carry the prompt string built by
+    :func:`build_cli_prompt`. The Anthropic-style messages payload is
+    ignored on this path — CLIs read images via their own file capability.
+    """
+    prompt = req.get("cli_prompt") or ""
+    model = req.get("model", DEFAULT_MODEL)
+    return _run_cli_backend("claude", prompt, model)
+
+
+def codex_cli_call_fn(req: dict[str, Any]) -> dict[str, Any]:
+    """``llm_call_fn`` that shells out to the local ``codex -p`` CLI.
+
+    Same contract as :func:`claude_cli_call_fn`, just a different binary.
+    """
+    prompt = req.get("cli_prompt") or ""
+    model = req.get("model", DEFAULT_MODEL)
+    return _run_cli_backend("codex", prompt, model)
 
 
 def dry_run_llm(_req: dict[str, Any]) -> dict[str, Any]:
@@ -205,16 +324,26 @@ def diff_chunk(chunk: Chunk, pdf_path: str | Path, epub_path: str | Path,
 
     req = build_request(pdf_img, epub_img, model=model,
                         system_prompt=system_prompt)
+    # Piggy-back the CLI-style prompt onto the same dict so the CLI
+    # backends don't need a separate dispatch path. API backends ignore
+    # this key; the Anthropic SDK silently drops unknown kwargs anyway
+    # only when invoked via ``**req`` against ``messages.create`` — but
+    # to be safe ``_make_anthropic_call_fn`` strips it before the call.
+    req["cli_prompt"] = build_cli_prompt(pdf_img, epub_img)
     response = llm_call_fn(req)
     return parse_findings(response, chunk)
 
 
 __all__ = [
+    "DEFAULT_CLI_TIMEOUT",
     "DEFAULT_MAX_TOKENS",
     "DEFAULT_MODEL",
     "DEFAULT_SYSTEM_PROMPT",
     "Finding",
+    "build_cli_prompt",
     "build_request",
+    "claude_cli_call_fn",
+    "codex_cli_call_fn",
     "diff_chunk",
     "dry_run_llm",
     "parse_findings",

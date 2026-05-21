@@ -21,7 +21,10 @@ from .chunker import Chunk, sample_chunks
 from .differ import (
     DEFAULT_SYSTEM_PROMPT,
     Finding,
+    build_cli_prompt,
     build_request,
+    claude_cli_call_fn,
+    codex_cli_call_fn,
     diff_chunk,
     dry_run_llm,
 )
@@ -31,7 +34,10 @@ __all__ = [
     "Chunk",
     "DEFAULT_SYSTEM_PROMPT",
     "Finding",
+    "build_cli_prompt",
     "build_request",
+    "claude_cli_call_fn",
+    "codex_cli_call_fn",
     "diff_chunk",
     "dry_run_llm",
     "render_epub_chunk",

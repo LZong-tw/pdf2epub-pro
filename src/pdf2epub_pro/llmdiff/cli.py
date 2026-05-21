@@ -3,7 +3,8 @@
 Usage::
 
     python -m pdf2epub_pro.llmdiff <pdf> <epub> --n=5 --out=findings.md \\
-        [--dry-run] [--model=claude-haiku-4-5-20251001]
+        [--dry-run] [--model=claude-haiku-4-5-20251001] \\
+        [--backend {claude_cli,codex_cli,anthropic_api,dry_run}]
 
 The tool samples N pages (first, last, N-2 interior), aligns each with the
 corresponding EPUB section, renders both to PNG, and asks an LLM to flag any
@@ -12,10 +13,16 @@ defects. Findings are aggregated into a markdown report.
 Exit status is **always 0** when the run completes — this is a review tool,
 not a gate. Inspect the report and decide whether to act.
 
-No ``ANTHROPIC_API_KEY`` set (or ``--dry-run`` passed) means the dry-run
-stub is used and the report is written with an empty findings list. This
-is the intended way to validate the prompt/request structure without
-paying for inference.
+Backend selection (preferred → fallback) when ``--backend`` is omitted:
+
+1. ``claude_cli``     — shells out to the local ``claude -p`` CLI if on PATH.
+2. ``codex_cli``      — shells out to the local ``codex -p`` CLI if on PATH.
+3. ``anthropic_api``  — uses the optional ``anthropic`` SDK with
+   ``ANTHROPIC_API_KEY`` from env.
+4. ``dry_run``        — offline stub; report has an empty findings list.
+
+The CLI paths are free for users with a Claude Code or Codex CLI
+subscription, so they are preferred over the metered API key path.
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ import argparse
 import importlib
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,9 +41,15 @@ from .differ import (
     DEFAULT_MODEL,
     DEFAULT_SYSTEM_PROMPT,
     Finding,
+    build_cli_prompt,
+    claude_cli_call_fn,
+    codex_cli_call_fn,
     diff_chunk,
     dry_run_llm,
 )
+
+# Names accepted by --backend. ``"auto"`` triggers the selection chain.
+BACKENDS = ("auto", "claude_cli", "codex_cli", "anthropic_api", "dry_run")
 
 
 def _make_anthropic_call_fn(api_key: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -55,13 +69,73 @@ def _make_anthropic_call_fn(api_key: str) -> Callable[[dict[str, Any]], dict[str
     client = anthropic.Anthropic(api_key=api_key)
 
     def call(req: dict[str, Any]) -> dict[str, Any]:  # pragma: no cover - needs key
-        msg = client.messages.create(**req)
+        # diff_chunk piggy-backs the CLI prompt onto the same dict; the
+        # Anthropic SDK rejects unknown kwargs, so drop it here.
+        sdk_req = {k: v for k, v in req.items() if k != "cli_prompt"}
+        msg = client.messages.create(**sdk_req)
         # SDK objects expose ``model_dump`` (pydantic v2) — fall back to dict().
         if hasattr(msg, "model_dump"):
             return msg.model_dump()
         return dict(msg)
 
     return call
+
+
+def _anthropic_sdk_available() -> bool:
+    """Return True when the optional ``anthropic`` SDK can be imported."""
+    try:
+        importlib.import_module("anthropic")
+    except ImportError:
+        return False
+    return True
+
+
+def _select_backend(explicit: str, *, dry_run_flag: bool) -> str:
+    """Resolve ``--backend`` (possibly ``"auto"``) to a concrete backend name.
+
+    Order when ``explicit == "auto"``:
+      1. ``claude_cli``     if ``shutil.which("claude")`` is non-None.
+      2. ``codex_cli``      if ``shutil.which("codex")`` is non-None.
+      3. ``anthropic_api``  if ``ANTHROPIC_API_KEY`` is set *and* the
+         ``anthropic`` package imports.
+      4. ``dry_run`` otherwise.
+
+    ``--dry-run`` is an unconditional short-circuit and always wins. It
+    is the historical way to force offline mode and we don't break that
+    behaviour just because the user has ``claude`` on PATH.
+    """
+    if dry_run_flag:
+        return "dry_run"
+    if explicit and explicit != "auto":
+        return explicit
+    if shutil.which("claude"):
+        return "claude_cli"
+    if shutil.which("codex"):
+        return "codex_cli"
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if api_key and _anthropic_sdk_available():
+        return "anthropic_api"
+    return "dry_run"
+
+
+def _build_call_fn(backend: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Map a resolved backend name to the matching ``llm_call_fn``."""
+    if backend == "dry_run":
+        return dry_run_llm
+    if backend == "claude_cli":
+        return claude_cli_call_fn
+    if backend == "codex_cli":
+        return codex_cli_call_fn
+    if backend == "anthropic_api":
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            raise SystemExit(
+                "anthropic_api backend requested but ANTHROPIC_API_KEY "
+                "is not set. Set the env var or pick a different "
+                "--backend."
+            )
+        return _make_anthropic_call_fn(api_key)
+    raise SystemExit(f"unknown backend: {backend!r}")
 
 
 def _render_chunk_section(chunk: Chunk, findings: list[Finding]) -> str:
@@ -139,8 +213,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Path to a file whose contents replace the default "
                         "system prompt. Useful for prompt iteration.")
     p.add_argument("--dump-request", action="store_true",
-                   help="Print the first chunk's request body as JSON "
-                        "(base64 image payloads truncated) and exit.")
+                   help="Print the first chunk's request body and exit. "
+                        "For API backends this is the JSON Messages-API "
+                        "payload (base64 image data truncated); for CLI "
+                        "backends it is the prompt string passed to "
+                        "``claude -p`` / ``codex -p``.")
+    p.add_argument("--backend", choices=BACKENDS, default="auto",
+                   help="Which LLM backend to use. Default ``auto`` prefers "
+                        "the local ``claude`` CLI, then ``codex``, then the "
+                        "Anthropic API, then the offline dry-run stub. "
+                        "``--dry-run`` always wins over ``--backend``.")
     return p
 
 
@@ -174,12 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.system_prompt_file:
         system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    dry_run = args.dry_run or not api_key
-    if dry_run:
-        llm_call_fn: Callable[[dict[str, Any]], dict[str, Any]] = dry_run_llm
-    else:
-        llm_call_fn = _make_anthropic_call_fn(api_key)
+    backend = _select_backend(args.backend, dry_run_flag=args.dry_run)
+    dry_run = backend == "dry_run"
 
     chunks = sample_chunks(pdf_path, epub_path, n=args.n)
     if not chunks:
@@ -187,8 +265,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.dump_request:
-        # Useful for prompt-engineering iterations: render & build one
-        # request body, dump it, do nothing else.
+        # Prompt-engineering iteration: render & build one request payload,
+        # dump it, do nothing else. The dumped shape depends on the
+        # backend — JSON for the API path, raw prompt string for the CLIs.
         from .differ import build_request
         from .renderer import render_epub_chunk, render_pdf_page
         rdir = Path(args.render_dir or (pdf_path.parent / ".llmdiff-renders"))
@@ -198,10 +277,20 @@ def main(argv: list[str] | None = None) -> int:
         epub_img = rdir / f"epub_p{first.pdf_page:04d}.png"
         render_pdf_page(pdf_path, first.pdf_page, pdf_img, dpi=args.dpi)
         render_epub_chunk(epub_path, first, epub_img)
-        req = build_request(pdf_img, epub_img, model=args.model,
-                            system_prompt=system_prompt)
-        print(json.dumps(_truncate_request_for_dump(req), indent=2))
+        if backend in ("claude_cli", "codex_cli"):
+            print(build_cli_prompt(pdf_img, epub_img))
+        else:
+            req = build_request(pdf_img, epub_img, model=args.model,
+                                system_prompt=system_prompt)
+            print(json.dumps(_truncate_request_for_dump(req), indent=2))
         return 0
+
+    # Build the call function lazily — after ``--dump-request`` has had
+    # its chance to short-circuit — so the SDK import only happens when
+    # we actually intend to call the API.
+    llm_call_fn: Callable[[dict[str, Any]], dict[str, Any]] = (
+        _build_call_fn(backend)
+    )
 
     results: list[tuple[Chunk, list[Finding]]] = []
     for chunk in chunks:
@@ -217,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     _write_report(out_path, pdf_path, epub_path, args.model,
                   dry_run, results)
     total = sum(len(f) for _, f in results)
-    mode = "dry-run" if dry_run else "live"
+    mode = "dry-run" if dry_run else f"live ({backend})"
     print(f"[llmdiff] {mode}: {len(chunks)} chunks, {total} findings → {out_path}")
     return 0
 
