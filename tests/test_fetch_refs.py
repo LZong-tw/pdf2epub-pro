@@ -195,6 +195,23 @@ def test_escape_placeholders_in_code_skips_singleword_capital():
     assert "&lt;FOO&gt;" not in out
 
 
+def test_escape_placeholders_in_code_handles_lowercase_multiword():
+    # REGRESSION: AWS WAF PDFs include lowercase placeholders like
+    # ``<security group id>`` and ``<delegated account id>``.  python-
+    # markdown parses these as malformed HTML elements with empty
+    # ``id=""`` attrs — exactly the same trap as the capitalized form.
+    body = (
+        "Replace <username>, <password> and <security group id> with "
+        "actual values.  Run as <delegated account id> for the audit role."
+    )
+    out = _escape_placeholders_in_code(body)
+    assert "&lt;security group id&gt;" in out
+    assert "&lt;delegated account id&gt;" in out
+    # Single-word forms intentionally skipped (could be valid HTML).
+    assert "<username>" in out
+    assert "<password>" in out
+
+
 def test_looks_like_code_recognises_shell_directives():
     # SLURM directive must be detected so multiline backticks containing
     # them stay fenced instead of being unwrapped into prose with #SBATCH

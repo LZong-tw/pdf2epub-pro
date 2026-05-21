@@ -129,16 +129,24 @@ def _fence_inline_code(body: str) -> str:
 #       author already marked the span as code; here ANY ``<…>`` content
 #       inside the span is safe to escape.
 #
-#   (b) bare-prose placeholders that *look* like proper-noun chains:
-#       starts with a capital letter, contains at least one whitespace,
-#       no nested angle bracket or newline.  This intentionally skips
-#       lowercase-first patterns (real HTML tags like ``<a href="x">``)
-#       and short single tokens (``<DETAILS>`` / ``<TOOLING_ACCOUNT_ID>``
-#       are handled by the backtick case when authors mark them as code).
+#   (b) bare-prose placeholders that look like word chains:
+#       two or more whitespace-separated *word* tokens (letters, digits,
+#       hyphen, underscore only) wrapped in angle brackets.  Each token
+#       is restricted to ``[A-Za-z0-9_-]+`` which excludes HTML markup
+#       characters (``=``, ``"``, ``/``, ``:``, ``.``, etc.), so real
+#       embedded HTML like ``<a href="x">`` and autolinks like
+#       ``<https://url>`` are NOT matched.  Single-token forms like
+#       ``<details>`` or ``<TOOLING_ACCOUNT_ID>`` are also not matched —
+#       those rely on author backtick-marking when used as placeholders.
+#       Multi-word lowercase forms like ``<security group id>`` and
+#       multi-word capitalized forms like ``<Microsoft Entra Tenant ID>``
+#       both qualify.
 _BACKTICK_WITH_ANGLE_RE = re.compile(r"`([^`\n]*<[^`\n]*)`")
 
-# Capital-starting, contains a whitespace, no inner '<', '>', or newline.
-_BARE_PLACEHOLDER_RE = re.compile(r"<([A-Z][^<>\n]*\s[^<>\n]*)>")
+# Two-plus word tokens, each [A-Za-z][\w-]*, whitespace-separated.
+_BARE_PLACEHOLDER_RE = re.compile(
+    r"<([A-Za-z][A-Za-z0-9_-]*(?:\s+[A-Za-z][A-Za-z0-9_-]*)+)>"
+)
 
 
 def _escape_placeholders_in_code(body: str) -> str:
