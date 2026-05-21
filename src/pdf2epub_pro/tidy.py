@@ -57,12 +57,35 @@ AWS_H2_RULES = [
      lambda m: f"#### {m.group(1)}"),
     (re.compile(r"^##\s+(FSI[A-Z]+\d+[A-Z]?:\s+.+?)\s*$"),
      lambda m: f"### {m.group(1)}"),
+    # Per-best-practice subsections live BELOW the BP (which we promoted to
+    # H4), so they should be H5 — using H4 here creates the H2→H4 jumps the
+    # audit complained about.
     (re.compile(
         r"^##\s+(Prescriptive guidance|Implementation guidance|"
         r"Implementation steps|Related documents:?|Related videos:?|"
-        r"Related examples:?)\s*$"
-    ), lambda m: f"#### {m.group(1)}"),
+        r"Related examples:?|Common anti-patterns:?|Benefits|Overview|"
+        r"Conclusion|Prerequisites|Additional resources)\s*$"
+    ), lambda m: f"##### {m.group(1)}"),
+    # Same for the H4 form that some passes already produced.
+    (re.compile(
+        r"^####\s+(Prescriptive guidance|Implementation guidance|"
+        r"Implementation steps|Related documents:?|Related videos:?|"
+        r"Related examples:?|Common anti-patterns:?|Benefits|Overview|"
+        r"Conclusion|Prerequisites|Additional resources)\s*$"
+    ), lambda m: f"##### {m.group(1)}"),
 ]
+
+
+# AWS WAF questions frequently use lettered sub-bullets ("- a.", "- b.")
+# that PDF extraction flattens to column 0 instead of nesting them.
+_LETTERED_SUBLIST_RE = re.compile(r"^- ([a-z])\.\s+(.+)$")
+
+
+def indent_lettered_sublists(lines):
+    """Indent `- a.` / `- b.` … bullets one nesting level so they read as
+    sub-items of the preceding numbered list / paragraph, rather than as a
+    parallel top-level list."""
+    return [_LETTERED_SUBLIST_RE.sub(r"  - \1. \2", l) for l in lines]
 
 
 def _is_structural(line: str) -> bool:
@@ -459,6 +482,7 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     if ruleset == "aws":
         lines = promote_pillars_aws(lines)
         lines = demote_subsections_aws(lines)
+        lines = indent_lettered_sublists(lines)
     lines = heal_list_gaps(lines)
     lines = heal_hyphen_breaks(lines)
     lines = heal_broken_sentences(lines)
