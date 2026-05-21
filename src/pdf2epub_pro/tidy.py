@@ -273,6 +273,9 @@ def normalize_relative_links(lines, base="https://docs.aws.amazon.com/"):
         cleaned = href.replace("\\", "/")
         if "://" in cleaned or cleaned.startswith(("mailto:", "tel:", "#", "/")):
             return f"[{text}]({cleaned})"
+        # Strip leading './' so we don't end up with 'base/./foo.html'.
+        while cleaned.startswith("./"):
+            cleaned = cleaned[2:]
         return f"[{text}]({base}{cleaned})"
     return [_MD_LINK_NORM_RE.sub(repl, line) for line in lines]
 
