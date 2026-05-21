@@ -156,6 +156,7 @@ def test_relative_href_skeleton_negative_absolute(tmp_path: Path):
 
 # -- 19. Heading depth jump ------------------------------------------------
 def test_heading_depth_jump_positive(tmp_path: Path):
+    # H1 → H4 skips 2 levels (H2, H3) → info severity, still surfaced.
     epub = _build_epub(tmp_path, {
         "OEBPS/a.xhtml": _xhtml('<h1>One</h1><h4>Four</h4>'),
     })
@@ -163,6 +164,7 @@ def test_heading_depth_jump_positive(tmp_path: Path):
     assert len(findings) == 1
     assert findings[0].extra["from"] == 1
     assert findings[0].extra["to"] == 4
+    assert findings[0].severity == "info"
 
 
 def test_heading_depth_jump_negative(tmp_path: Path):
@@ -170,6 +172,28 @@ def test_heading_depth_jump_negative(tmp_path: Path):
         "OEBPS/a.xhtml": _xhtml('<h1>One</h1><h2>Two</h2><h3>Three</h3>'),
     })
     assert list(HeadingDepthJumpDetector().run(epub)) == []
+
+
+def test_heading_depth_jump_allows_single_skip(tmp_path: Path):
+    # REGRESSION: AWS-style structure intentionally goes H1 pillar → H3 BP
+    # because tidy demotes H2 to bullets. Single-level skips must NOT fire,
+    # or 1358 false positives drown out real defects in WAF.
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<h1>Pillar</h1><h3>BP heading</h3>'),
+    })
+    assert list(HeadingDepthJumpDetector().run(epub)) == []
+
+
+def test_heading_depth_jump_reports_skipped_count(tmp_path: Path):
+    # H2 → H6 skips 3 levels → warn (genuine structural defect).
+    epub = _build_epub(tmp_path, {
+        "OEBPS/a.xhtml": _xhtml('<h2>Two</h2><h6>Six</h6>'),
+    })
+    findings = list(HeadingDepthJumpDetector().run(epub))
+    assert len(findings) == 1
+    assert findings[0].extra["skipped"] == 3
+    assert "skips 3 levels" in findings[0].message
+    assert findings[0].severity == "warn"
 
 
 # -- 20. Empty spine item --------------------------------------------------

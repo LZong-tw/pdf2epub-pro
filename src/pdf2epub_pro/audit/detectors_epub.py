@@ -242,10 +242,32 @@ class RelativeHrefSkeletonDetector(EpubDetector):
 # -- 19. Heading depth jump ------------------------------------------------
 @register_epub_detector
 class HeadingDepthJumpDetector(EpubDetector):
-    """H1 → H4 with no H2/H3 between, within one spine item."""
+    """Heading skipping levels within one spine item.
+
+    Many real-world publications skip heading levels intentionally — e.g.
+    section→subsection without an intermediate group heading, or a chunk
+    file that begins at H2 because the H1 was already extracted into the
+    EPUB chapter metadata by the splitter.  Flagging every single skip as
+    a warning drowns out the genuine defects (real structural mis-nesting,
+    typically skips of 3+ levels).
+
+    Tunable thresholds via constructor:
+      • silent_max_skip (default 1) — skips ≤ this are not reported
+      • warn_min_skip   (default 3) — skips ≥ this are warn; in between is info
+
+    The defaults are deliberately permissive ("any 2-level skip is just
+    informational") because aggressive defaults flood reports on real
+    books.  Lower silent_max_skip to 0 + warn_min_skip to 2 for strict
+    semantic-HTML enforcement.
+    """
     name = "heading_depth_jump"
-    description = "Heading depth skips a level (e.g. H1 directly followed by H4)"
+    description = (
+        "Heading depth skips levels (info by default, warn at 3+ skipped)"
+    )
     default_severity = "warn"
+
+    silent_max_skip = 1
+    warn_min_skip = 3
 
     def run(self, path: Path) -> Iterable[Finding]:
         with zipfile.ZipFile(path) as zf:
@@ -253,15 +275,25 @@ class HeadingDepthJumpDetector(EpubDetector):
                 parser = _parse_member(zf, member)
                 last_level: int | None = None
                 for level, text, line in parser.headings:
-                    if last_level is not None and level > last_level + 1:
+                    if last_level is not None and level > last_level:
+                        skipped = level - last_level - 1
+                        if skipped <= self.silent_max_skip:
+                            last_level = level
+                            continue
+                        severity = (
+                            "warn" if skipped >= self.warn_min_skip else "info"
+                        )
                         yield Finding(
                             detector=self.name,
-                            severity=self.default_severity,
+                            severity=severity,
                             file=member,
                             line=line,
-                            message=f"H{last_level} → H{level} skips H{last_level + 1}",
+                            message=(
+                                f"H{last_level} → H{level} skips {skipped} levels"
+                            ),
                             snippet=(text or "")[:160],
-                            extra={"from": last_level, "to": level},
+                            extra={"from": last_level, "to": level,
+                                   "skipped": skipped},
                         )
                     last_level = level
 
