@@ -22,6 +22,70 @@ from .tidy import fix_digit_headings_text, strip_orphan_dashes
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
+# Long backtick-quoted inline code blocks (>200 chars) are almost always
+# `<code>` HTML elements that Trafilatura flattened into one giant inline
+# span. Promote them to fenced blocks so they render as readable code.
+_INLINE_BLOCK_RE = re.compile(r"`([^`\n]{200,})`")
+# Inline code containing both braces and newlines is almost certainly meant
+# to be multi-line.
+_INLINE_MULTILINE_RE = re.compile(r"`([^`]*\n[^`]*)`")
+
+
+def _fence_inline_code(body: str) -> str:
+    """Promote oversized / multiline inline `…` spans to fenced blocks."""
+    def lang_for(text: str) -> str:
+        t = text.strip()
+        if t.startswith(("{", "[")) and t.rstrip().endswith(("}", "]")):
+            return "json"
+        if t.startswith("<") and ">" in t:
+            return "xml"
+        if any(kw in t for kw in ("aws ", "sudo ", "$ ", "git ")):
+            return "bash"
+        return ""
+
+    def repl(m):
+        body = m.group(1).strip()
+        lang = lang_for(body)
+        return f"\n\n```{lang}\n{body}\n```\n\n"
+    body = _INLINE_MULTILINE_RE.sub(repl, body)
+    body = _INLINE_BLOCK_RE.sub(repl, body)
+    return body
+
+
+# Trafilatura sometimes emits "tables" from AWS doc pages without the
+# `| --- | --- |` separator row that python-markdown's tables extension
+# requires. Without that header, the markdown parser falls back to plain
+# text and the literal "|" pipes leak into the rendered EPUB.
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+
+
+def _fix_broken_tables(body: str) -> str:
+    lines = body.splitlines()
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        is_row = bool(_TABLE_ROW_RE.match(line))
+        is_lone = line.strip() == "|"
+        if is_lone:
+            i += 1
+            continue
+        if is_row:
+            next_line = lines[i + 1] if i + 1 < len(lines) else ""
+            if _TABLE_SEP_RE.match(next_line):
+                # Looks like a well-formed pipe table; pass through.
+                out.append(line)
+                i += 1
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            cells = [c for c in cells if c]
+            out.append(" — ".join(cells))
+            i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
 
 def _absolutize_links(body: str, source_url: str) -> str:
     """Trafilatura output preserves relative links from the source page.
@@ -104,8 +168,12 @@ def fetch_one(url: str):
         m = re.match(r"<!-- title: (.*?) -->\n", text)
         title = m.group(1) if m else url
         body = text[m.end():] if m else text
-        # Re-absolutize relative links from older cached entries (idempotent).
+        # Re-run the post-extract passes on the cached body so changes to
+        # _absolutize_links / _fix_broken_tables / _fence_inline_code apply
+        # to old caches too. All three are idempotent.
         body = _absolutize_links(body, url)
+        body = _fix_broken_tables(body)
+        body = _fence_inline_code(body)
         return {"title": title, "url": url, "content": body, "cached": True}
 
     try:
@@ -134,6 +202,8 @@ def fetch_one(url: str):
         return None
 
     body = _absolutize_links(body, url)
+    body = _fix_broken_tables(body)
+    body = _fence_inline_code(body)
     cp.write_text(f"<!-- title: {title} -->\n{body}", encoding="utf-8")
     time.sleep(DELAY)
     return {"title": title, "url": url, "content": body, "cached": False}
