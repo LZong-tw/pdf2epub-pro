@@ -60,7 +60,11 @@ def cmd_convert(args):
     # 5. cover (if not disabled)
     cover_arg = None
     if not args.no_cover:
-        title_lines = (args.title or stem).split("|")
+        # Cover text falls back to --title if no --cover-title supplied.
+        # Use '|' inside --cover-title to break the cover heading across
+        # multiple lines without polluting the EPUB metadata title.
+        cover_text = args.cover_title or args.title or stem
+        title_lines = cover_text.split("|")
         make_cover(
             cover_path,
             super_title=args.cover_super or "",
@@ -108,6 +112,9 @@ def build_parser():
     c.add_argument("--no-cover", action="store_true")
     c.add_argument("--cover-variant", default="pillars",
                    choices=["pillars", "graph"])
+    c.add_argument("--cover-title",
+                   help="Cover heading text; use '|' for line breaks. "
+                        "Defaults to --title if omitted.")
     c.add_argument("--cover-super", default="")
     c.add_argument("--cover-subtitle", default="")
     c.set_defaults(func=cmd_convert)
