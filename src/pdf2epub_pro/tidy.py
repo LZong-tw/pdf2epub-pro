@@ -93,6 +93,18 @@ def strip_chunk_dividers(lines):
     return [l for l in lines if l.strip() != "---"]
 
 
+def strip_orphan_dashes(lines):
+    """Remove bare '-' lines (Trafilatura artifact).
+
+    Trafilatura often outputs an isolated '-' between a paragraph and the next
+    heading.  When Calibre's markdown parser sees `\\n-\\n##### Heading`, it
+    interprets the dash as a setext H2 underline whose content is whatever
+    came before, yielding spurious empty `<h2>-</h2>` elements.  Bare dashes
+    are never meaningful as standalone content here, so drop them.
+    """
+    return [l for l in lines if l.strip() != "-"]
+
+
 def strip_orphan_page_numbers(lines):
     out = []
     for i, line in enumerate(lines):
@@ -285,6 +297,7 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     lines = text.splitlines()
     lines = strip_toc(lines)
     lines = strip_chunk_dividers(lines)
+    lines = strip_orphan_dashes(lines)
     lines = strip_orphan_page_numbers(lines)
     lines = consolidate_title(lines, doc_title,
                               AWS_TITLE_RE if ruleset == "aws" else None)

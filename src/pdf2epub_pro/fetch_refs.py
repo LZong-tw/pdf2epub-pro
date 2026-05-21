@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 import requests
 import trafilatura
 
-from .tidy import fix_digit_headings_text
+from .tidy import fix_digit_headings_text, strip_orphan_dashes
 
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -175,12 +175,13 @@ def fetch_refs(md_in: Path, md_out: Path, *,
         parts.append(f"\n## {r['title']}\n")
         parts.append(f"\nSource: <{r['url']}>\n")
         parts.append(f"\n{_demote_headings(r['content'])}\n")
-    # Run the slug-safety pass over the whole appendix too — Trafilatura
-    # often emits headings like "# 7 Pitfalls ..." that, after demotion,
-    # still slugify to '7-pitfalls-...' (invalid XML ID, must start with a
-    # letter). fix_digit_headings_text rewrites them to "Step N: ...".
-    md_out.write_text(fix_digit_headings_text("".join(parts)),
-                      encoding="utf-8")
+    # Run the slug-safety + dash-stripping passes over the whole appendix
+    # too — Trafilatura sprinkles lone '-' lines and digit-led headings
+    # ('# 7 Pitfalls ...', '# 24×7 ...') that Calibre's parser otherwise
+    # turns into invalid XML IDs or spurious `<h2>-</h2>` elements.
+    text = "".join(parts)
+    text = "\n".join(strip_orphan_dashes(text.splitlines()))
+    md_out.write_text(fix_digit_headings_text(text), encoding="utf-8")
     print(f"[fetch-refs] wrote {md_out} with {len(refs)} embedded refs",
           flush=True)
     return len(refs)
