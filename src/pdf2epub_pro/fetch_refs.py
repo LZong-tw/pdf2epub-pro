@@ -101,14 +101,85 @@ def _absolutize_links(body: str, source_url: str) -> str:
     return _MD_LINK_RE.sub(repl, body)
 
 
+# Common PDF ligatures (ﬁ / ﬂ / ﬀ / ﬃ / ﬄ) often arrive in Trafilatura's
+# output as the two-byte mojibake "ï¬" because the third UTF-8 byte was
+# filtered. A round-trip latin-1↔utf-8 can't restore them (the third byte
+# is gone); the only safe recovery is a curated word dictionary.
+_LIGATURE_FIXES = {
+    # fl ligature
+    "ï¬ow": "flow", "ï¬ows": "flows", "ï¬owing": "flowing",
+    "ï¬oat": "float", "ï¬oats": "floats", "ï¬oating": "floating",
+    "ï¬oor": "floor", "ï¬oors": "floors",
+    "ï¬exible": "flexible", "ï¬exibility": "flexibility",
+    "ï¬ag": "flag", "ï¬ags": "flags",
+    "ï¬aws": "flaws", "ï¬aw": "flaw",
+    "ï¬uctuate": "fluctuate", "ï¬uctuation": "fluctuation",
+    "ï¬ush": "flush",
+    # fi ligature
+    "ï¬eld": "field", "ï¬elds": "fields",
+    "ï¬lter": "filter", "ï¬lters": "filters", "ï¬ltering": "filtering",
+    "ï¬nal": "final", "ï¬nally": "finally",
+    "ï¬nance": "finance", "ï¬nances": "finances",
+    "ï¬nancial": "financial",
+    "ï¬nd": "find", "ï¬nding": "finding", "ï¬ndings": "findings",
+    "ï¬gure": "figure", "ï¬gures": "figures",
+    "ï¬x": "fix", "ï¬xed": "fixed", "ï¬xes": "fixes", "ï¬xing": "fixing",
+    "ï¬rst": "first", "ï¬re": "fire", "ï¬ve": "five",
+    "deï¬ne": "define", "deï¬nes": "defines", "deï¬ned": "defined",
+    "deï¬ning": "defining",
+    "deï¬nition": "definition", "deï¬nitions": "definitions",
+    "deï¬nitive": "definitive", "deï¬nitively": "definitively",
+    "speciï¬c": "specific", "speciï¬cally": "specifically",
+    "speciï¬cation": "specification", "speciï¬cations": "specifications",
+    "modiï¬ed": "modified", "modiï¬cation": "modification",
+    "modiï¬cations": "modifications", "modiï¬er": "modifier",
+    "identiï¬er": "identifier", "identiï¬ers": "identifiers",
+    "identiï¬ed": "identified",
+    "notiï¬cation": "notification", "notiï¬cations": "notifications",
+    "veriï¬ed": "verified", "veriï¬cation": "verification",
+    "certiï¬ed": "certified", "certiï¬cate": "certificate",
+    "certiï¬cates": "certificates", "certiï¬cation": "certification",
+    "classiï¬ed": "classified", "classiï¬cation": "classification",
+    "qualiï¬ed": "qualified", "qualiï¬cations": "qualifications",
+    "simpliï¬ed": "simplified", "simpliï¬cation": "simplification",
+    "uniï¬ed": "unified", "diversiï¬ed": "diversified",
+    "signiï¬cant": "significant", "signiï¬cantly": "significantly",
+    "signiï¬cance": "significance",
+    "scientiï¬c": "scientific",
+    "magniï¬cent": "magnificent",
+    "conï¬dential": "confidential",
+    "conï¬guration": "configuration", "conï¬gurations": "configurations",
+    "conï¬gured": "configured", "conï¬gure": "configure",
+    # ff / ffi / ffl ligatures (less common but present in AWS docs)
+    "eï¬ect": "effect", "eï¬ects": "effects",
+    "eï¬ective": "effective", "eï¬ectively": "effectively",
+    "eï¬ectiveness": "effectiveness",
+    "eï¬icient": "efficient", "eï¬iciently": "efficiently",
+    "eï¬iciency": "efficiency", "eï¬iciencies": "efficiencies",
+    "suï¬icient": "sufficient", "suï¬iciently": "sufficiently",
+    "diï¬icult": "difficult", "diï¬iculty": "difficulty",
+    "oï¬er": "offer", "oï¬ers": "offers", "oï¬ering": "offering",
+    "oï¬icer": "officer", "oï¬icers": "officers",
+    "oï¬ice": "office",
+    "staï¬": "staff",
+    "tariï¬": "tariff", "tariï¬s": "tariffs",
+}
+_LIGATURE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _LIGATURE_FIXES) + r")\b"
+)
+
+
 def _fix_mojibake(text: str) -> str:
     """Heal text that was decoded as Latin-1 when it was really UTF-8.
 
-    The signature symptom is sequences like 'â' (instead of em-dash '—') or
-    'Ã©' (instead of 'é').  The round-trip encode-as-latin-1 / decode-as-
-    utf-8 is idempotent because text containing characters that aren't in
-    Latin-1 will raise UnicodeEncodeError and we return the input unchanged.
+    Two passes:
+      1. Latin-1↔UTF-8 round trip for "â" / "Ã" style mojibake (em-dash,
+         smart quotes, accented letters).
+      2. Curated dictionary for ligature mojibake (ï¬X), where the third
+         UTF-8 byte was dropped and round-tripping can't restore the word.
     """
+    if "ï¬" in text:
+        text = _LIGATURE_RE.sub(lambda m: _LIGATURE_FIXES[m.group(1)], text)
     if "â" not in text and "Ã" not in text:
         return text
     try:
