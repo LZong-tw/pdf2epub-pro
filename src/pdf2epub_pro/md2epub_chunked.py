@@ -94,10 +94,51 @@ DC_NS = "http://purl.org/dc/elements/1.1/"
 # ---- split-at-H1 (and H2 when needed) --------------------------------------
 
 # Match "# heading" but not "## heading"; allow trailing space variants.
-_H1_RE = re.compile(r"^# (?!#)", re.MULTILINE)
-_H2_RE = re.compile(r"^## (?!#)", re.MULTILINE)
+# These regexes are KEPT only for the in-text fallback paths that already
+# operate on individual lines.  Anywhere we slice the whole markdown we
+# MUST use the fence-aware offset functions below — otherwise a `# foo`
+# inside a ```fenced``` example template (AWS docs include playbook
+# examples like this verbatim) gets misread as a real heading, splits
+# the chunk at the wrong place, and cascades into rendering failures
+# downstream (markdown-it treats the rest of the fence as code, body
+# images inside that range never become `<img>` tags, manifest walker
+# never picks them up, EPUB ships missing assets — seen first on WAF's
+# c0012_image_000000_… 2026-05-22).
+_H1_LINE_RE = re.compile(r"^# (?!#)")
+_H2_LINE_RE = re.compile(r"^## (?!#)")
 _HEADING_LINE_RE = re.compile(r"^(#{1,6}) +(.+?)\s*$")
 _ATTR_ID_RE = re.compile(r"\s+\{#([A-Za-z][\w.:-]*)\}\s*$")
+_FENCE_OPEN_RE = re.compile(r"^\s{0,3}(```+|~~~+)")
+
+
+def _heading_offsets(md: str, line_pred) -> list[int]:
+    """Byte offsets of lines satisfying `line_pred` that are NOT inside
+    a fenced code block.
+
+    `line_pred(line)` should return True for the heading shape we want
+    (H1, H2, etc.).  This is the single source of truth for "what
+    counts as a heading for chunking purposes" — every other regex in
+    this module must defer to it on whole-markdown slicing decisions.
+    """
+    starts: list[int] = []
+    offset = 0
+    in_fence = False
+    for line in md.splitlines(keepends=True):
+        stripped_for_fence = line.rstrip("\n").lstrip()
+        if _FENCE_OPEN_RE.match(stripped_for_fence):
+            in_fence = not in_fence
+        elif not in_fence and line_pred(line):
+            starts.append(offset)
+        offset += len(line)
+    return starts
+
+
+def _is_h1_line(line: str) -> bool:
+    return bool(_H1_LINE_RE.match(line))
+
+
+def _is_h2_line(line: str) -> bool:
+    return bool(_H2_LINE_RE.match(line))
 
 
 def _split_at_h1(md: str) -> list[str]:
@@ -107,7 +148,7 @@ def _split_at_h1(md: str) -> list[str]:
     practice that's empty for our corpus, but we keep it so we never
     silently drop content).
     """
-    indices = [m.start() for m in _H1_RE.finditer(md)]
+    indices = _heading_offsets(md, _is_h1_line)
     if not indices:
         return [md]
     chunks: list[str] = []
@@ -128,7 +169,7 @@ def _subsplit_at_h2(chunk: str, max_bytes: int) -> list[str]:
     if len(chunk.encode("utf-8")) <= max_bytes:
         return [chunk]
 
-    indices = [m.start() for m in _H2_RE.finditer(chunk)]
+    indices = _heading_offsets(chunk, _is_h2_line)
     if not indices:
         return [chunk]
 
@@ -172,18 +213,41 @@ def chunk_markdown(md: str, max_bytes: int = MAX_CHUNK_BYTES) -> list[str]:
 
 # ---- attr_list shim --------------------------------------------------------
 
+def _iter_lines_with_fence_state(md: str):
+    """Yield (line, in_fence) for every line in `md`.
+
+    Tracks ```` ``` ```` and ``~~~`` fenced code blocks so callers can
+    skip "heading-looking" lines that are actually example content
+    inside a fence.  The fence-open/close line itself is reported as
+    in_fence=False so callers that *do* want to process the marker line
+    (rare) still can; in_fence reflects the state of the BODY.
+    """
+    in_fence = False
+    for line in md.splitlines():
+        stripped = line.lstrip()
+        if _FENCE_OPEN_RE.match(stripped):
+            # toggle AFTER yielding so the marker line is not reported
+            # as in-fence content.
+            yield line, in_fence
+            in_fence = not in_fence
+            continue
+        yield line, in_fence
+
+
 def _extract_heading_ids(md: str) -> tuple[str, list[str | None]]:
     """Strip `{#id}` suffixes off heading lines, recording them in order.
 
     Returns (cleaned_markdown, ids_in_document_order) where the i-th entry
     of `ids_in_document_order` is the id (or None) for the i-th heading
     in the cleaned markdown.  Order matches what a left-to-right HTML
-    walk of `<h1>..<h6>` will see.
+    walk of `<h1>..<h6>` will see.  Lines inside fenced code blocks are
+    not headings — they're example content that just happens to start
+    with `#`.
     """
     ids: list[str | None] = []
     out_lines: list[str] = []
-    for line in md.splitlines():
-        m = _HEADING_LINE_RE.match(line)
+    for line, in_fence in _iter_lines_with_fence_state(md):
+        m = _HEADING_LINE_RE.match(line) if not in_fence else None
         if not m:
             out_lines.append(line)
             continue
@@ -267,7 +331,9 @@ def _xhtml_for_chunk(body_xhtml: str, title: str, lang: str) -> str:
 
 
 def _first_heading_text(md_chunk: str) -> str:
-    for line in md_chunk.splitlines():
+    for line, in_fence in _iter_lines_with_fence_state(md_chunk):
+        if in_fence:
+            continue
         m = _HEADING_LINE_RE.match(line)
         if m:
             t = m.group(2)
@@ -385,7 +451,9 @@ def md2epub_chunked(md_in: Path, epub_out: Path, *,
 
         for i, chunk_md in enumerate(chunks, 1):
             n_headings = sum(
-                1 for line in chunk_md.splitlines() if _HEADING_LINE_RE.match(line)
+                1
+                for line, in_fence in _iter_lines_with_fence_state(chunk_md)
+                if not in_fence and _HEADING_LINE_RE.match(line)
             )
             ids_for_chunk = all_ids[cursor: cursor + n_headings]
             cursor += n_headings

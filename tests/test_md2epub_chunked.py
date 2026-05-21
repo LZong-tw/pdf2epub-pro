@@ -21,6 +21,66 @@ from pdf2epub_pro.md2epub_chunked import (
 
 # ---- pure-string units ------------------------------------------------------
 
+def test_chunk_markdown_ignores_headings_inside_fenced_code():
+    # REGRESSION: AWS docs include example playbook templates inside
+    # ```fenced``` blocks, where literal `# Heading` lines are EXAMPLE
+    # content, not real markdown structure.  A fence-blind splitter
+    # treats them as real H1s and miscarves the chunk, cascading into
+    # markdown-it interpreting the rest of the fence as code and
+    # silently dropping any images underneath.
+    md = "\n".join([
+        "# Real H1 A",
+        "Body A.",
+        "",
+        "Some intro.",
+        "",
+        "```",
+        "# Fake H1 inside fence",
+        "## Fake H2 inside fence",
+        "",
+        "Example content with ![embedded](img.png).",
+        "```",
+        "",
+        "More body of Real H1 A.",
+        "",
+        "![real image](real-img.png)",
+        "",
+        "# Real H1 B",
+        "Body B.",
+        "",
+    ])
+    chunks = chunk_markdown(md)
+    # Exactly two chunks: one per REAL H1.  The fenced fake `#` lines
+    # must not introduce extra chunks.
+    assert len(chunks) == 2
+    assert chunks[0].startswith("# Real H1 A")
+    assert chunks[1].startswith("# Real H1 B")
+    # The image in chunk A (outside the fence) and the fence body itself
+    # both survive in chunk A.
+    assert "![real image](real-img.png)" in chunks[0]
+    assert "Fake H1 inside fence" in chunks[0]
+
+
+def test_extract_heading_ids_skips_fenced_pound_lines():
+    md = "\n".join([
+        "# A {#first}",
+        "",
+        "```",
+        "# Not a heading",
+        "## Also not",
+        "```",
+        "",
+        "## B {#second}",
+        "",
+    ])
+    cleaned, ids = _extract_heading_ids(md)
+    # Only the real headings produce id entries.
+    assert ids == ["first", "second"]
+    # The fenced "headings" stay verbatim.
+    assert "# Not a heading" in cleaned
+    assert "## Also not" in cleaned
+
+
 def test_chunk_markdown_splits_at_h1_only_when_no_oversize():
     md = "\n".join([
         "# One",
