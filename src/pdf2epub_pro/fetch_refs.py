@@ -101,6 +101,22 @@ def _absolutize_links(body: str, source_url: str) -> str:
     return _MD_LINK_RE.sub(repl, body)
 
 
+def _fix_mojibake(text: str) -> str:
+    """Heal text that was decoded as Latin-1 when it was really UTF-8.
+
+    The signature symptom is sequences like 'â' (instead of em-dash '—') or
+    'Ã©' (instead of 'é').  The round-trip encode-as-latin-1 / decode-as-
+    utf-8 is idempotent because text containing characters that aren't in
+    Latin-1 will raise UnicodeEncodeError and we return the input unchanged.
+    """
+    if "â" not in text and "Ã" not in text:
+        return text
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 def _demote_headings(body: str, by: int = 2) -> str:
     """Demote every markdown heading by N levels (capped at H6).
 
@@ -172,11 +188,11 @@ def fetch_one(url: str):
     if cp.exists():
         text = cp.read_text(encoding="utf-8")
         m = re.match(r"<!-- title: (.*?) -->\n", text)
-        title = m.group(1) if m else url
+        title = _fix_mojibake(m.group(1)) if m else url
         body = text[m.end():] if m else text
-        # Re-run the post-extract passes on the cached body so changes to
-        # _absolutize_links / _fix_broken_tables / _fence_inline_code apply
-        # to old caches too. All three are idempotent.
+        # Re-run all post-extract passes on the cached body so fixes added
+        # after the cache was written still take effect. All are idempotent.
+        body = _fix_mojibake(body)
         body = _absolutize_links(body, url)
         body = _fix_broken_tables(body)
         body = _fence_inline_code(body)
