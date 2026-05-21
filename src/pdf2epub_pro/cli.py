@@ -1,11 +1,16 @@
 """Top-level CLI: orchestrate the full PDF → EPUB pipeline.
 
-    pdf2epub-pro convert <pdf> [--output-dir <dir>] [--title T] [--authors A]
-                          [--no-fetch-refs] [--no-cover] [--chunk-size N]
+    pdf2epub-pro convert <pdf> [--output-dir <dir>] [--build-dir <dir>]
+                          [--title T] [--authors A] [--no-fetch-refs]
+                          [--no-cover] [--chunk-size N]
                           [--ruleset aws|generic]
+    pdf2epub-pro clean [--stem <stem>]
 
 Stages: split → tidy → restore-links → fetch-refs → cover → md2epub.
-Intermediate artifacts land under <output-dir>/<stem>-build/.
+Final EPUB lands in ``--output-dir``.  Intermediate artifacts live
+under a tool-managed cache (see :mod:`workspace`) so they don't
+pollute Downloads/Desktop.  Override per-run with ``--build-dir`` or
+permanently with the ``PDF2EPUB_BUILD_ROOT`` environment variable.
 """
 import argparse
 import shutil
@@ -20,6 +25,12 @@ from .make_cover import make_cover
 from .md2epub import md2epub
 from .md2epub_pandoc import md2epub_pandoc
 from .md2epub_chunked import md2epub_chunked
+from .workspace import (
+    build_dir_for,
+    clean_build_dirs,
+    default_build_root,
+    list_build_dirs,
+)
 
 
 # Backend dispatch: --synthesizer picks the markdown→EPUB stage.
@@ -46,8 +57,15 @@ def cmd_convert(args):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     stem = pdf.stem
-    build = out_dir / f"{stem}-build"
-    build.mkdir(exist_ok=True)
+    # Intermediate artifacts go to a tool-managed cache by default —
+    # never beside the user's Downloads-bound EPUB.  --build-dir can
+    # point to a specific path or a shared parent (we still scope by
+    # stem under it so multiple books co-exist).
+    if args.build_dir:
+        build_root = Path(args.build_dir).resolve()
+        build = build_dir_for(stem, root=build_root)
+    else:
+        build = build_dir_for(stem)
 
     raw_md = build / f"{stem}.md"
     tidy_md = build / f"{stem}.tidy.md"
@@ -111,6 +129,18 @@ def cmd_convert(args):
 
     print(f"\n[pdf2epub-pro] done: {epub_out}")
     print(f"               build artifacts kept in: {build}")
+    print(f"               (clean with: pdf2epub-pro clean --stem {stem!r})")
+
+
+def cmd_clean(args):
+    root = Path(args.build_dir).resolve() if args.build_dir else None
+    removed = clean_build_dirs(root=root, stem=args.stem)
+    if not removed:
+        scope = f"stem {args.stem!r}" if args.stem else "build root"
+        print(f"[pdf2epub-pro clean] nothing to remove ({scope} empty)")
+        return
+    for p in removed:
+        print(f"[pdf2epub-pro clean] removed {p}")
 
 
 def build_parser():
@@ -122,6 +152,13 @@ def build_parser():
     c = sub.add_parser("convert", help="Run the full PDF→EPUB pipeline.")
     c.add_argument("pdf")
     c.add_argument("--output-dir", "-o", help="Where to write the EPUB.")
+    c.add_argument(
+        "--build-dir",
+        help="Root for intermediate artifacts.  Defaults to a tool-"
+             "managed cache (see workspace.default_build_root); each "
+             "book gets its own <build-dir>/<stem>/ subtree.  Override "
+             "permanently via the PDF2EPUB_BUILD_ROOT environment var.",
+    )
     c.add_argument("--title", help="Book title (use '|' for cover line breaks).")
     c.add_argument("--authors", default="Unknown")
     c.add_argument("--language", default="en")
@@ -147,6 +184,24 @@ def build_parser():
              "calibre on large books with 0-error audit parity)",
     )
     c.set_defaults(func=cmd_convert)
+
+    cl = sub.add_parser(
+        "clean",
+        help="Remove tool-managed intermediate artifacts.  Default "
+             "scope is the whole build root; pass --stem <stem> to "
+             "scope to a single book's cache.",
+    )
+    cl.add_argument(
+        "--stem",
+        help="Only remove the per-stem subtree under the build root.",
+    )
+    cl.add_argument(
+        "--build-dir",
+        help="Override the build root (otherwise uses the default "
+             "resolved by workspace.default_build_root).",
+    )
+    cl.set_defaults(func=cmd_clean)
+
     return p
 
 
