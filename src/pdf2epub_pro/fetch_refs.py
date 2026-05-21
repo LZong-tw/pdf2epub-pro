@@ -19,8 +19,21 @@ import trafilatura
 from .tidy import (
     fix_digit_headings_text,
     space_markdown_adjacency,
+    strip_emphasis_inner_space,
     strip_orphan_dashes,
 )
+
+
+def _normalize_emphasis(body: str) -> str:
+    """Body-level wrapper around tidy.strip_emphasis_inner_space.
+
+    Trafilatura's markdown extraction frequently emits `**X **` / `__ X __`
+    style emphasis runs with stray whitespace around the markers.  Run the
+    parser-validated emphasis normalizer over each line so the appendix
+    matches the same CommonMark-compliant output the tidy pass produces
+    for the main book body.
+    """
+    return "\n".join(strip_emphasis_inner_space(body.splitlines()))
 
 
 # Permit a single level of nested `[...]` inside the link text — AWS docs
@@ -392,6 +405,7 @@ def fetch_one(url: str):
         body = _escape_placeholders_in_code(body)
         body = _fence_inline_code(body)
         body = _escape_shell_directive_lines(body)
+        body = _normalize_emphasis(body)
         return {"title": title, "url": url, "content": body, "cached": True}
 
     try:
@@ -436,6 +450,7 @@ def fetch_one(url: str):
     body = _escape_placeholders_in_code(body)
     body = _fence_inline_code(body)
     body = _escape_shell_directive_lines(body)
+    body = _normalize_emphasis(body)
     cp.write_text(f"<!-- title: {title} -->\n{body}", encoding="utf-8")
     time.sleep(DELAY)
     return {"title": title, "url": url, "content": body, "cached": False}
