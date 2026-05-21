@@ -400,6 +400,44 @@ def md2epub_chunked(md_in: Path, epub_out: Path, *,
             manifest.append((mid, fname, "application/xhtml+xml"))
             spine_ids.append(mid)
 
+        # Walk the rendered chunks for `<img src="...">` references and
+        # copy each referenced asset into the workdir at the SAME relative
+        # path so Calibre's input plugin can resolve it.  Without this
+        # pass the produced EPUB has only the explicit `--cover` image —
+        # every body figure is silently dropped (an entire artifact lost).
+        _IMG_SRC_RE = re.compile(r'<img[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
+        _IMG_MEDIA = {
+            "png":  "image/png",
+            "jpg":  "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif":  "image/gif",
+            "svg":  "image/svg+xml",
+            "webp": "image/webp",
+        }
+        seen_srcs: set[str] = set()
+        for chunk_id, fname, _ in [m for m in manifest
+                                   if m[2] == "application/xhtml+xml"]:
+            content = (workdir / fname).read_text(encoding="utf-8")
+            for m in _IMG_SRC_RE.finditer(content):
+                src = m.group(1)
+                if src.startswith(("http://", "https://", "data:", "/")):
+                    continue
+                seen_srcs.add(src)
+
+        md_dir = md_in.resolve().parent
+        for i, src in enumerate(sorted(seen_srcs)):
+            abs_src = (md_dir / src).resolve()
+            if not abs_src.exists():
+                continue
+            rel_dst = Path(src.replace("\\", "/"))
+            dst = workdir / rel_dst
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(abs_src, dst)
+            ext = abs_src.suffix.lower().lstrip(".")
+            media = _IMG_MEDIA.get(ext, "application/octet-stream")
+            mid = f"img-{i:04d}"
+            manifest.append((mid, str(rel_dst).replace("\\", "/"), media))
+
         # CSS
         if extra_css and extra_css.exists():
             shutil.copy(extra_css, workdir / "epub.css")
