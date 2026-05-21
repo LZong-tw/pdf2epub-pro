@@ -101,25 +101,47 @@ _MD_LINK_NORM_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 # ("sustainability" → "sustainab ility").  These dictionaries are the seed
 # observed so far; extend as the audit surfaces more variants.
 COMPOUND_REJOINS = {
+    "antipattern": "anti-pattern",
+    "autodiscovery": "auto-discovery",
     "cloudbased": "cloud-based",
+    "cloudnative": "cloud-native",
     "costeffective": "cost-effective",
+    "crossaccount": "cross-account",
+    "crossregion": "cross-region",
+    "crosssite": "cross-site",
     "datadriven": "data-driven",
     "decisionmaking": "decision-making",
     "endtoend": "end-to-end",
+    "eventdriven": "event-driven",
+    "faulttolerant": "fault-tolerant",
+    "faulttolerance": "fault-tolerance",
     "finegrained": "fine-grained",
     "highavailability": "high-availability",
+    "highperformance": "high-performance",
+    "highthroughput": "high-throughput",
     "idempotencyrelated": "idempotency-related",
+    "lowlatency": "low-latency",
     "longrunning": "long-running",
     "longterm": "long-term",
-    "lowlatency": "low-latency",
+    "machinereadable": "machine-readable",
+    "multiaccount": "multi-account",
+    "multifactor": "multi-factor",
+    "multiregion": "multi-region",
+    "multistep": "multi-step",
+    "multitenant": "multi-tenant",
     "networkbased": "network-based",
-    "openssource": "open-source",
+    "nonproduction": "non-production",
     "ondemand": "on-demand",
+    "onpremises": "on-premises",
+    "openssource": "open-source",
     "policybased": "policy-based",
     "realtime": "real-time",
     "rolebased": "role-based",
+    "selfservice": "self-service",
+    "serviceoriented": "service-oriented",
     "shortterm": "short-term",
     "thirdparty": "third-party",
+    "timebased": "time-based",
     "wellarchitected": "well-architected",
     "wellknown": "well-known",
     "writeonce": "write-once",
@@ -146,10 +168,27 @@ def _compile_word_re(words):
 
 
 def un_glue_compounds(lines):
+    """Re-hyphenate compound words that lost their hyphen in PDF extraction.
+
+    Guards against URL contexts: `docs.aws.amazon.com/wellarchitected/...` and
+    similar paths legitimately contain lowercase concatenated forms, so any
+    match adjacent to `/` or `.` is left alone.
+    """
     pat = _compile_word_re(list(COMPOUND_REJOINS))
     if pat is None:
         return lines
-    return [pat.sub(lambda m: COMPOUND_REJOINS[m.group(1)], l) for l in lines]
+
+    def make_repl(line):
+        def repl(m):
+            start, end = m.start(), m.end()
+            prev = line[start - 1] if start > 0 else ""
+            nxt = line[end] if end < len(line) else ""
+            if prev in "/\\." or nxt in "/\\.":
+                return m.group(0)
+            return COMPOUND_REJOINS[m.group(1)]
+        return repl
+
+    return [pat.sub(make_repl(l), l) for l in lines]
 
 
 def heal_intra_word_spaces(lines):
