@@ -61,6 +61,8 @@ pdf2epub-links  = "pdf2epub_pro.restore_links:main"
 pdf2epub-refs   = "pdf2epub_pro.fetch_refs:main"
 pdf2epub-cover  = "pdf2epub_pro.make_cover:main"
 pdf2epub-build  = "pdf2epub_pro.md2epub:main"
+pdf2epub-build-pandoc = "pdf2epub_pro.md2epub_pandoc:main"
+pdf2epub-build-chunked = "pdf2epub_pro.md2epub_chunked:main"
 pdf2epub-audit  = "pdf2epub_pro.audit.cli:main"
 pdf2epub-llmdiff = "pdf2epub_pro.llmdiff.cli:main"
 

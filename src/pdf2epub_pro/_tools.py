@@ -11,8 +11,18 @@ _CALIBRE_GUESSES = [
     Path("/usr/bin"),
 ]
 
+_PANDOC_GUESSES = [
+    Path(os.path.expandvars(r"%LOCALAPPDATA%\Pandoc")),
+    Path(r"C:\Program Files\Pandoc"),
+    Path(r"C:\Program Files (x86)\Pandoc"),
+    Path("/usr/local/bin"),
+    Path("/usr/bin"),
+    Path("/opt/homebrew/bin"),
+]
 
-def _resolve(env_var: str, cmd: str, calibre_subdir: bool = False) -> str:
+
+def _resolve(env_var: str, cmd: str, calibre_subdir: bool = False,
+             pandoc_subdir: bool = False) -> str:
     override = os.environ.get(env_var)
     if override:
         return override
@@ -21,6 +31,12 @@ def _resolve(env_var: str, cmd: str, calibre_subdir: bool = False) -> str:
         return found
     if calibre_subdir:
         for base in _CALIBRE_GUESSES:
+            for ext in ("", ".exe"):
+                p = base / (cmd + ext)
+                if p.exists():
+                    return str(p)
+    if pandoc_subdir:
+        for base in _PANDOC_GUESSES:
             for ext in ("", ".exe"):
                 p = base / (cmd + ext)
                 if p.exists():
@@ -40,6 +56,10 @@ def ebook_convert_path() -> str:
 
 def ebook_meta_path() -> str:
     return _resolve("PDF2EPUB_EBOOK_META", "ebook-meta", calibre_subdir=True)
+
+
+def pandoc_path() -> str:
+    return _resolve("PDF2EPUB_PANDOC", "pandoc", pandoc_subdir=True)
 
 
 def share_dir() -> Path:
