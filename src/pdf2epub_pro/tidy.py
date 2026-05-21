@@ -96,6 +96,104 @@ def strip_chunk_dividers(lines):
 _MD_LINK_NORM_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 
 
+# PDF text extraction periodically drops the hyphen in well-known compound
+# words ("cloud-based" → "cloudbased") OR injects a stray space mid-word
+# ("sustainability" → "sustainab ility").  These dictionaries are the seed
+# observed so far; extend as the audit surfaces more variants.
+COMPOUND_REJOINS = {
+    "cloudbased": "cloud-based",
+    "costeffective": "cost-effective",
+    "datadriven": "data-driven",
+    "decisionmaking": "decision-making",
+    "endtoend": "end-to-end",
+    "finegrained": "fine-grained",
+    "highavailability": "high-availability",
+    "idempotencyrelated": "idempotency-related",
+    "longrunning": "long-running",
+    "longterm": "long-term",
+    "lowlatency": "low-latency",
+    "networkbased": "network-based",
+    "openssource": "open-source",
+    "ondemand": "on-demand",
+    "policybased": "policy-based",
+    "realtime": "real-time",
+    "rolebased": "role-based",
+    "shortterm": "short-term",
+    "thirdparty": "third-party",
+    "wellarchitected": "well-architected",
+    "wellknown": "well-known",
+    "writeonce": "write-once",
+}
+INTRA_WORD_SPACE_FIXES = {
+    "architect ural": "architectural",
+    "architect ure": "architecture",
+    "component s": "components",
+    "credentia ls": "credentials",
+    "efficient ly": "efficiently",
+    "minimizin g": "minimizing",
+    "performan ce": "performance",
+    "sustainab ility": "sustainability",
+    "threat intellige nce": "threat intelligence",
+}
+_COMPOUND_RE = None  # populated lazily once dicts settle
+
+
+def _compile_word_re(words):
+    if not words:
+        return None
+    # Word-boundary on both sides, case-insensitive only for ASCII letters.
+    return re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b")
+
+
+def un_glue_compounds(lines):
+    pat = _compile_word_re(list(COMPOUND_REJOINS))
+    if pat is None:
+        return lines
+    return [pat.sub(lambda m: COMPOUND_REJOINS[m.group(1)], l) for l in lines]
+
+
+def heal_intra_word_spaces(lines):
+    """Apply a curated dictionary of `wo rd → word` repairs."""
+    if not INTRA_WORD_SPACE_FIXES:
+        return lines
+    # Build a single alternation regex; INTRA_WORD_SPACE_FIXES keys contain
+    # a space, so we anchor with word-start at the first half and word-end
+    # at the second half.
+    pat = re.compile(
+        r"\b(" + "|".join(re.escape(k) for k in INTRA_WORD_SPACE_FIXES) + r")\b"
+    )
+    return [pat.sub(lambda m: INTRA_WORD_SPACE_FIXES[m.group(1)], l)
+            for l in lines]
+
+
+# Docling / Trafilatura output frequently glues markdown link/bold syntax
+# onto the surrounding word with no space:
+#   text](url)to fetch → text](url) to fetch
+#   word[link](url)    → word [link](url)
+#   **bold**word       → **bold** word
+# The substitutions below add a space at the seam while leaving punctuation
+# (.,;:?!) and start-of-line cases alone.
+_MD_ADJACENCY_RULES = [
+    # Closing ) of a link followed by a letter or backtick
+    (re.compile(r"(\]\([^)\s]+\))([A-Za-z`])"), r"\1 \2"),
+    # Letter immediately preceding [link]
+    (re.compile(r"([A-Za-z,])(\[[^\]]+\]\()"), r"\1 \2"),
+    # **bold**word
+    (re.compile(r"(\*\*[^*\n]+\*\*)([A-Za-z])"), r"\1 \2"),
+    # word**bold**
+    (re.compile(r"([A-Za-z])(\*\*[^*\n]+\*\*)"), r"\1 \2"),
+]
+
+
+def space_markdown_adjacency(lines):
+    out = []
+    for line in lines:
+        for pat, repl in _MD_ADJACENCY_RULES:
+            line = pat.sub(repl, line)
+        out.append(line)
+    return out
+
+
 def normalize_relative_links(lines, base="https://docs.aws.amazon.com/"):
     """Rewrite `[text](href)` where href is a relative path (no scheme) or
     contains Windows backslashes — both happen when Docling pulls a PDF's
@@ -326,6 +424,9 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     lines = heal_hyphen_breaks(lines)
     lines = heal_broken_sentences(lines)
     lines = fix_digit_headings(lines)
+    lines = un_glue_compounds(lines)
+    lines = heal_intra_word_spaces(lines)
+    lines = space_markdown_adjacency(lines)
     lines = normalize_relative_links(lines)
     lines = apply_corpus_fixes(lines, ruleset)
     return "\n".join(lines) + "\n"
