@@ -109,20 +109,48 @@ def _fence_inline_code(body: str) -> str:
     return body
 
 
-# Trafilatura sometimes outputs PDF CLI placeholders like '<ACCOUNT_ID>' or
-# '<tooling account ID>' as raw HTML-ish text. python-markdown then treats
-# them as malformed HTML tags and emits literal '<account id="">' elements
-# which collide across files (empty id, empty id) and fail EPUB validation.
-# Escape angle brackets inside backtick spans where placeholders typically
-# live, so they render as literal text instead of being parsed as HTML.
+# PDFs frequently render CLI / config placeholders as bare angle-bracketed
+# text — '<ACCOUNT_ID>', '<TOOLING_ACCOUNT_ID>', and multi-word forms like
+# '<Microsoft Entra Tenant ID>' or '<security group ID>'.  When that text
+# survives into the markdown body, python-markdown reads it as a (badly
+# formed) HTML tag: the first word becomes the tag name and each remaining
+# word becomes an attribute with an empty value, e.g.
+#
+#     <Microsoft Entra Tenant ID>
+#       → <microsoft entra="" tenant="" id="">…</microsoft>
+#
+# Multiple such elements in one chunk all carry ``id=""`` and collide,
+# tripping Calibre's DuplicateId check on the final EPUB.
+#
+# Defence: escape the angle brackets so they render as literal text.  Two
+# patterns to cover:
+#
+#   (a) backtick-wrapped placeholders — the conservative case where the
+#       author already marked the span as code; here ANY ``<…>`` content
+#       inside the span is safe to escape.
+#
+#   (b) bare-prose placeholders that *look* like proper-noun chains:
+#       starts with a capital letter, contains at least one whitespace,
+#       no nested angle bracket or newline.  This intentionally skips
+#       lowercase-first patterns (real HTML tags like ``<a href="x">``)
+#       and short single tokens (``<DETAILS>`` / ``<TOOLING_ACCOUNT_ID>``
+#       are handled by the backtick case when authors mark them as code).
 _BACKTICK_WITH_ANGLE_RE = re.compile(r"`([^`\n]*<[^`\n]*)`")
+
+# Capital-starting, contains a whitespace, no inner '<', '>', or newline.
+_BARE_PLACEHOLDER_RE = re.compile(r"<([A-Z][^<>\n]*\s[^<>\n]*)>")
 
 
 def _escape_placeholders_in_code(body: str) -> str:
-    def repl(m):
+    def backtick_repl(m):
         inner = m.group(1).replace("<", "&lt;").replace(">", "&gt;")
         return f"`{inner}`"
-    return _BACKTICK_WITH_ANGLE_RE.sub(repl, body)
+    body = _BACKTICK_WITH_ANGLE_RE.sub(backtick_repl, body)
+
+    def bare_repl(m):
+        return "&lt;" + m.group(1) + "&gt;"
+    body = _BARE_PLACEHOLDER_RE.sub(bare_repl, body)
+    return body
 
 
 # Trafilatura sometimes emits "tables" from AWS doc pages without the

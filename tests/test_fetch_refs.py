@@ -157,6 +157,44 @@ def test_escape_placeholders_in_code_handles_cli_angle_brackets():
     assert "<TOOLING_ACCOUNT_ID>" not in out
 
 
+def test_escape_placeholders_in_code_handles_bare_multiword_placeholder():
+    # REGRESSION: '<Microsoft Entra Tenant ID>' in bare prose used to slip
+    # through and python-markdown parsed it as a malformed tag with
+    # ``id=""``, colliding across chunks and tripping Calibre's
+    # DuplicateId on the final EPUB.
+    body = "Use <Microsoft Entra Tenant ID> as the tenant identifier."
+    out = _escape_placeholders_in_code(body)
+    assert "&lt;Microsoft Entra Tenant ID&gt;" in out
+    assert "<Microsoft Entra Tenant ID>" not in out
+
+
+def test_escape_placeholders_in_code_leaves_real_html_alone():
+    # Real markdown-embedded HTML tags start with lowercase and must not
+    # get escaped; otherwise legitimate raw-HTML blocks break.
+    body = 'Click <a href="https://example.com">here</a> for more.'
+    out = _escape_placeholders_in_code(body)
+    assert '<a href="https://example.com">' in out
+    assert "&lt;a" not in out
+
+
+def test_escape_placeholders_in_code_leaves_autolinks_alone():
+    body = "See <https://example.com> for the spec."
+    out = _escape_placeholders_in_code(body)
+    assert "<https://example.com>" in out
+    assert "&lt;https" not in out
+
+
+def test_escape_placeholders_in_code_skips_singleword_capital():
+    # A single capitalized token without whitespace is not a placeholder
+    # pattern under our rule — too risky given valid uses like <DETAILS>
+    # uppercase HTML or section markers.  These should be handled by the
+    # backtick branch when authors mark them as code.
+    body = "The <FOO> section is optional."
+    out = _escape_placeholders_in_code(body)
+    assert "<FOO>" in out
+    assert "&lt;FOO&gt;" not in out
+
+
 def test_looks_like_code_recognises_shell_directives():
     # SLURM directive must be detected so multiline backticks containing
     # them stay fenced instead of being unwrapped into prose with #SBATCH
