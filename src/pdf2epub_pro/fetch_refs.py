@@ -61,6 +61,13 @@ _TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
 
 def _fix_broken_tables(body: str) -> str:
+    """Salvage malformed pipe-tables; pass real tables through untouched.
+
+    A real pipe table is "header row + separator row + N data rows".  If we
+    see a row whose immediate next line is a separator, the entire run of
+    pipe rows is emitted verbatim.  Standalone pipe rows (no separator
+    next) are flattened into prose joined by em-dashes.
+    """
     lines = body.splitlines()
     out, i = [], 0
     while i < len(lines):
@@ -73,10 +80,15 @@ def _fix_broken_tables(body: str) -> str:
         if is_row:
             next_line = lines[i + 1] if i + 1 < len(lines) else ""
             if _TABLE_SEP_RE.match(next_line):
-                # Looks like a well-formed pipe table; pass through.
+                # Emit header + separator + all consecutive data rows as-is.
                 out.append(line)
-                i += 1
+                out.append(next_line)
+                i += 2
+                while i < len(lines) and _TABLE_ROW_RE.match(lines[i]):
+                    out.append(lines[i])
+                    i += 1
                 continue
+            # Broken table: flatten to prose.
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             cells = [c for c in cells if c]
             out.append(" — ".join(cells))
@@ -182,8 +194,10 @@ def _fix_mojibake(text: str) -> str:
         text = _LIGATURE_RE.sub(lambda m: _LIGATURE_FIXES[m.group(1)], text)
     if "â" not in text and "Ã" not in text:
         return text
+    # Use cp1252 (Windows-1252) — it's a superset of Latin-1 that also covers
+    # smart-quote / em-dash / euro-sign mojibake sequences like "â€™" (’).
     try:
-        return text.encode("latin-1").decode("utf-8")
+        return text.encode("cp1252").decode("utf-8")
     except (UnicodeEncodeError, UnicodeDecodeError):
         return text
 

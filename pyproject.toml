@@ -36,6 +36,13 @@ dependencies = [
     "Pillow>=11.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
 [project.urls]
 Homepage = "https://github.com/LZong-tw/pdf2epub-pro"
 Issues = "https://github.com/LZong-tw/pdf2epub-pro/issues"
