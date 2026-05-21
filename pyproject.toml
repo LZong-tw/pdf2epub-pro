@@ -32,8 +32,10 @@ dependencies = [
     # HTML→Markdown for embedded refs.
     "trafilatura>=2.0",
     "requests>=2.32",
-    # Cover generation.
+    # Cover generation + L3 llmdiff text-only fallback render.
     "Pillow>=11.0",
+    # L3 llmdiff: parse EPUB XHTML to locate matching chunks.
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +57,8 @@ pdf2epub-links  = "pdf2epub_pro.restore_links:main"
 pdf2epub-refs   = "pdf2epub_pro.fetch_refs:main"
 pdf2epub-cover  = "pdf2epub_pro.make_cover:main"
 pdf2epub-build  = "pdf2epub_pro.md2epub:main"
+pdf2epub-audit  = "pdf2epub_pro.audit.cli:main"
+pdf2epub-llmdiff = "pdf2epub_pro.llmdiff.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdf2epub_pro"]
