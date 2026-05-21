@@ -191,6 +191,23 @@ def test_normalize_relative_links_passes_absolute_through():
     assert out == src
 
 
+def test_normalize_relative_links_handles_nested_brackets_in_link_text():
+    """REGRESSION: AWS docs embed control IDs like '[CloudTrail.1] X' as the
+    visible label of an outer markdown link. A naive `[^\\]]+` link-text
+    regex bails on the inner ']' and leaves 335+ relative './foo.html'
+    URLs unresolved in the EPUB.
+    """
+    src = [
+        "See [[CloudTrail.1] CloudTrail should be enabled](./cloudtrail-controls.html#cloudtrail-1) for details.",
+    ]
+    out = normalize_relative_links(src)
+    assert (
+        "[[CloudTrail.1] CloudTrail should be enabled]"
+        "(https://docs.aws.amazon.com/cloudtrail-controls.html#cloudtrail-1)"
+        in out[0]
+    )
+
+
 def test_normalize_relative_links_preserves_image_syntax():
     """REGRESSION: image refs ![alt](src) must NOT get a URL base
     prepended — they're local relative paths to artifact PNGs in the EPUB

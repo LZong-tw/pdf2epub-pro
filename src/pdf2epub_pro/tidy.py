@@ -118,7 +118,11 @@ def strip_chunk_dividers(lines):
 
 # Use negative lookbehind to exclude image syntax `![alt](src)` — image
 # refs are local artifact paths that must NOT get a URL base prepended.
-_MD_LINK_NORM_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)\)")
+# Allow a single level of nested `[...]` in the link text (e.g. control
+# IDs like '[CloudTrail.1] CloudTrail …').
+_MD_LINK_NORM_RE = re.compile(
+    r"(?<!!)\[((?:[^\[\]]|\[[^\]]*\])+)\]\(([^)\s]+)\)"
+)
 
 
 # PDF text extraction periodically drops the hyphen in well-known compound

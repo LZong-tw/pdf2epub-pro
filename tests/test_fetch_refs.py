@@ -85,6 +85,21 @@ def test_absolutize_links_preserves_absolute_and_anchors():
     assert out == body
 
 
+def test_absolutize_links_handles_nested_brackets():
+    """Trafilatura outputs AWS Security Hub control links as
+    `[[ServiceName.N] Title text](./service-controls.html#service-N)`.
+    The link-text regex must allow the inner balanced `[...]`.
+    """
+    body = (
+        "Apply [[CloudTrail.1] CloudTrail should be enabled "
+        "and configured](./cloudtrail-controls.html#cloudtrail-1)."
+    )
+    out = _absolutize_links(body, "https://docs.aws.amazon.com/securityhub/latest/userguide/sec-hub.html")
+    assert "https://docs.aws.amazon.com/securityhub/latest/userguide/cloudtrail-controls.html#cloudtrail-1" in out
+    # The visible label survives intact.
+    assert "[CloudTrail.1] CloudTrail should be enabled and configured" in out
+
+
 # ---------------------------------------------------------------- tables
 
 

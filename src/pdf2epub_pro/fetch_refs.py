@@ -23,7 +23,14 @@ from .tidy import (
 )
 
 
-_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+# Permit a single level of nested `[...]` inside the link text — AWS docs
+# frequently embed control IDs like '[CloudTrail.1] CloudTrail should be …'
+# as the visible label of an outer markdown link.  The simple `[^\]]+`
+# version bails on the first inner `]` and silently misses the surrounding
+# link.
+_MD_LINK_RE = re.compile(
+    r"\[((?:[^\[\]]|\[[^\]]*\])+)\]\(([^)]+)\)"
+)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
 # Long single-line backtick spans (>200 chars) are almost always `<code>`

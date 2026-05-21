@@ -41,7 +41,9 @@ def _normalize_uri(uri: str, base: str = DEFAULT_REL_URI_BASE) -> str:
     return base + uri.lstrip("/")
 
 
-_MD_LINK_RE = re.compile(r"\[[^\]]+\]\([^)]+\)")
+# Detect "this line already has a markdown link" — permit nested `[...]`
+# in the visible text so we don't false-negative on control-ID style links.
+_MD_LINK_RE = re.compile(r"\[(?:[^\[\]]|\[[^\]]*\])+\]\([^)]+\)")
 
 # Short/common single-word link texts that cause false positives if used as
 # regex needles against general prose. Curated from observation on AWS
