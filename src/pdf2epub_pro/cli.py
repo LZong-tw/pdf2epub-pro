@@ -18,6 +18,23 @@ from .restore_links import restore_pdf_links
 from .fetch_refs import fetch_refs
 from .make_cover import make_cover
 from .md2epub import md2epub
+from .md2epub_pandoc import md2epub_pandoc
+from .md2epub_chunked import md2epub_chunked
+
+
+# Backend dispatch: --synthesizer picks the markdown→EPUB stage.
+# Default is `pandoc` — 30× faster than `calibre` on large books
+# (WAF: ~1m40s vs ~50min) with 0-error audit parity after the
+# +ascii_identifiers + dedupe-id passes.  `calibre` is the historical
+# reference implementation kept for fallback when pandoc is unavailable
+# or output bytes need to exactly match older builds.  `chunked` uses
+# Calibre but pre-splits the markdown at H1 — currently has a known
+# image-embedding gap (see md2epub_chunked.py docstring).
+_SYNTHESIZERS = {
+    "pandoc": md2epub_pandoc,
+    "calibre": md2epub,
+    "chunked": md2epub_chunked,
+}
 
 
 def cmd_convert(args):
@@ -75,8 +92,10 @@ def cmd_convert(args):
         )
         cover_arg = cover_path
 
-    # 6. md → EPUB via Calibre
-    md2epub(
+    # 6. md → EPUB via the selected synthesizer (default: pandoc — see
+    #    _SYNTHESIZERS for trade-off notes).
+    synth = _SYNTHESIZERS[args.synthesizer]
+    synth(
         final_md,
         epub_out,
         title=args.title,
@@ -117,6 +136,13 @@ def build_parser():
                         "Defaults to --title if omitted.")
     c.add_argument("--cover-super", default="")
     c.add_argument("--cover-subtitle", default="")
+    c.add_argument(
+        "--synthesizer",
+        default="pandoc",
+        choices=sorted(_SYNTHESIZERS.keys()),
+        help="markdown→EPUB backend (default: pandoc — ~30× faster than "
+             "calibre on large books with 0-error audit parity)",
+    )
     c.set_defaults(func=cmd_convert)
     return p
 

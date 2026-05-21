@@ -18,16 +18,25 @@ publisher-specific behavior into defaults. When adding rules / detectors:
 
 ## Architecture
 
-Pipeline: `split → tidy → restore-links → fetch-refs → cover → md2epub`
+Pipeline: `split → tidy → restore-links → fetch-refs → cover → md2epub_{backend}`
 
 - `split.py` — PDF chunking via Docling
 - `tidy.py` — markdown cleanup (mojibake, hyphenation, list gaps, …)
 - `restore_links.py` — re-attach lost hyperlinks from PDF annotations
 - `fetch_refs.py` — fetch external refs into appendix via trafilatura
 - `make_cover.py` — PIL procedural cover
-- `md2epub.py` — Calibre `ebook-convert` wrapper
+- **`md2epub_pandoc.py`** — pandoc-based synthesizer (DEFAULT). ~30×
+  faster than Calibre on large books, 0-error audit parity after the
+  `+ascii_identifiers` reader extension + EPUB-level dedupe-id post-pass.
+- `md2epub.py` — Calibre `ebook-convert` wrapper (fallback / reference).
+- `md2epub_chunked.py` — pre-chunked Calibre experiment. Faster than
+  baseline Calibre but currently drops image assets — see module
+  docstring before using.
 - `audit/` — L2 defect detector pack (`pdf2epub-audit`)
 - `llmdiff/` — L3 LLM visual diff scaffold (`pdf2epub-llmdiff`, optional)
+
+The top-level `pdf2epub-pro convert` CLI picks the synthesizer via
+`--synthesizer {pandoc,calibre,chunked}` (default `pandoc`).
 
 ## Defect-coverage strategy
 
