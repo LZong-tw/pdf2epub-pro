@@ -27,7 +27,13 @@ def md2epub(md_in: Path, epub_out: Path, *,
 
     cmd = [
         ebook_convert_path(), str(md_in), str(epub_out),
-        "--chapter-mark", "pagebreak",
+        # Disable Calibre's default chapter heuristic: by default it greedily
+        # matches H1/H2 with words like "chapter"/"section"/"part" and
+        # inserts a pagebreak before each. We want the ONLY pagebreak driver
+        # to be our stylesheet's `h1 { page-break-before: always }` so that
+        # non-H1 headings keep flowing inline.
+        "--chapter", "/",
+        "--chapter-mark", "none",
         "--level1-toc", "//*[local-name()='h1']",
         "--level2-toc", "//*[local-name()='h2']",
         "--level3-toc", "//*[local-name()='h3']",

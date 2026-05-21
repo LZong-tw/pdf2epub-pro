@@ -247,6 +247,12 @@ def fix_digit_headings(lines):
     return out
 
 
+def fix_digit_headings_text(text: str) -> str:
+    """Apply fix_digit_headings to a full markdown string (convenience for
+    callers that work with text rather than line lists)."""
+    return "\n".join(fix_digit_headings(text.splitlines()))
+
+
 def apply_corpus_fixes(lines, ruleset):
     if ruleset != "aws":
         return lines
