@@ -93,6 +93,24 @@ def strip_chunk_dividers(lines):
     return [l for l in lines if l.strip() != "---"]
 
 
+_MD_LINK_NORM_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+
+
+def normalize_relative_links(lines, base="https://docs.aws.amazon.com/"):
+    """Rewrite `[text](href)` where href is a relative path (no scheme) or
+    contains Windows backslashes — both happen when Docling pulls a PDF's
+    embedded cross-reference URL verbatim. Turn them into absolute URLs so
+    the EPUB doesn't end up with "missing target" links.
+    """
+    def repl(m):
+        text, href = m.group(1), m.group(2)
+        cleaned = href.replace("\\", "/")
+        if "://" in cleaned or cleaned.startswith(("mailto:", "tel:", "#", "/")):
+            return f"[{text}]({cleaned})"
+        return f"[{text}]({base}{cleaned})"
+    return [_MD_LINK_NORM_RE.sub(repl, line) for line in lines]
+
+
 def strip_orphan_dashes(lines):
     """Remove bare '-' lines (Trafilatura artifact).
 
@@ -308,6 +326,7 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     lines = heal_hyphen_breaks(lines)
     lines = heal_broken_sentences(lines)
     lines = fix_digit_headings(lines)
+    lines = normalize_relative_links(lines)
     lines = apply_corpus_fixes(lines, ruleset)
     return "\n".join(lines) + "\n"
 

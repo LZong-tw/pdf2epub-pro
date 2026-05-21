@@ -36,9 +36,13 @@ def md2epub(md_in: Path, epub_out: Path, *,
         "--chapter-mark", "none",
         # Enable python-markdown extras we need: pipe tables, fenced code
         # blocks (so trafilatura output with ``` / | renders correctly),
-        # footnotes, abbreviations, smart-em-dashes, and definition lists.
+        # explicit attribute IDs (for collision-free appendix anchors),
+        # abbreviations, smart-em-dashes, and definition lists. Footnotes
+        # is intentionally omitted — Calibre splits the EPUB at H1, which
+        # separates footnote definitions from their references and would
+        # leave dangling "#fn1" links in the output.
         "--markdown-extensions",
-        "tables,fenced_code,footnotes,abbr,smarty,def_list",
+        "tables,fenced_code,attr_list,abbr,smarty,def_list",
         "--level1-toc", "//*[local-name()='h1']",
         "--level2-toc", "//*[local-name()='h2']",
         "--level3-toc", "//*[local-name()='h3']",

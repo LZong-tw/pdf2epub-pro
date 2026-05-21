@@ -135,6 +135,12 @@ DEFAULT_SKIP_PATTERNS = [
     r"/products/",
     r"#aws-account-",
     r"\?",
+    # Listing / category pages — Trafilatura extracts a list of article
+    # previews each truncated with "[...]", which is useless inside an EPUB.
+    r"aws\.amazon\.com/blogs/[^/]+/category/",
+    r"aws\.amazon\.com/blogs/[^/]+/?$",
+    r"aws\.amazon\.com/blogs/?$",
+    r"aws\.amazon\.com/architecture/?$",
 ]
 
 HEADERS = {
@@ -185,6 +191,11 @@ def fetch_one(url: str):
         sys.stderr.write(f"[fetch-refs] HTTP {r.status_code} {url}\n")
         return None
 
+    # AWS docs occasionally advertise the wrong charset in their HTTP header,
+    # causing requests to decode UTF-8 bytes as Latin-1 and producing "â"
+    # mojibake from em-dashes / quotes. Force UTF-8 so trafilatura sees the
+    # right characters.
+    r.encoding = "utf-8"
     html = r.text
     metadata = trafilatura.extract_metadata(html)
     title = (metadata.title if metadata else None) or url
@@ -199,6 +210,13 @@ def fetch_one(url: str):
     )
     if not body or len(body) < 200:
         sys.stderr.write(f"[fetch-refs] short body, skipping {url}\n")
+        return None
+
+    # Trafilatura adds "[...]" markers when it skipped over content. On a
+    # category / listing page it does this for every article preview,
+    # producing a body full of stubs. Reject if there are more than 2.
+    if body.count("[...]") > 2:
+        sys.stderr.write(f"[fetch-refs] listing/preview page, skipping {url}\n")
         return None
 
     body = _absolutize_links(body, url)
@@ -241,8 +259,10 @@ def fetch_refs(md_in: Path, md_out: Path, *,
     parts.append("\nThis appendix archives a snapshot of the externally referenced "
                  "content at the time this EPUB was built. Original links are "
                  "preserved inline; refer to the source URL for the latest version.\n")
-    for r in refs:
-        parts.append(f"\n## {r['title']}\n")
+    for idx, r in enumerate(refs, 1):
+        # Explicit unique ID via python-markdown's attr_list extension so
+        # cross-file ID collisions between appendix articles can't happen.
+        parts.append(f"\n## {r['title']} {{#ref-{idx:04d}}}\n")
         parts.append(f"\nSource: <{r['url']}>\n")
         parts.append(f"\n{_demote_headings(r['content'])}\n")
     # Run the slug-safety + dash-stripping passes over the whole appendix
