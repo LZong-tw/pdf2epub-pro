@@ -23,13 +23,16 @@ from .md2epub_chunked import md2epub_chunked
 
 
 # Backend dispatch: --synthesizer picks the markdown→EPUB stage.
-# Default is `pandoc` — 30× faster than `calibre` on large books
-# (WAF: ~1m40s vs ~50min) with 0-error audit parity after the
-# +ascii_identifiers + dedupe-id passes.  `calibre` is the historical
-# reference implementation kept for fallback when pandoc is unavailable
-# or output bytes need to exactly match older builds.  `chunked` uses
-# Calibre but pre-splits the markdown at H1 — currently has a known
-# image-embedding gap (see md2epub_chunked.py docstring).
+# Default is `pandoc` — broadest feature parity (typography,
+# definition lists, etc.) AND 30× faster than baseline `calibre` on
+# large books (WAF: ~1m40s vs ~50min) with 0-error audit parity after
+# the +ascii_identifiers + dedupe-id passes.  `calibre` is the
+# historical reference implementation kept for fallback when pandoc is
+# unavailable or output bytes need to exactly match older builds.
+# `chunked` pre-renders the markdown via markdown-it-py then hands
+# Calibre an OPF so its auto-split stage is a no-op (~34s on WAF) —
+# fastest of the three, opt-in for users who already have Calibre and
+# don't need pandoc's typography extensions.
 _SYNTHESIZERS = {
     "pandoc": md2epub_pandoc,
     "calibre": md2epub,

@@ -29,9 +29,11 @@ Pipeline: `split → tidy → restore-links → fetch-refs → cover → md2epub
   faster than Calibre on large books, 0-error audit parity after the
   `+ascii_identifiers` reader extension + EPUB-level dedupe-id post-pass.
 - `md2epub.py` — Calibre `ebook-convert` wrapper (fallback / reference).
-- `md2epub_chunked.py` — pre-chunked Calibre experiment. Faster than
-  baseline Calibre but currently drops image assets — see module
-  docstring before using.
+- `md2epub_chunked.py` — pre-chunked Calibre alternative. Pre-renders
+  markdown via markdown-it-py + hands Calibre an OPF so its 30-minute
+  auto-split stage is a no-op. Wall time on the WAF corpus: ~34s,
+  comparable image / TOC fidelity to baseline. Opt-in via
+  `--synthesizer chunked`.
 - `audit/` — L2 defect detector pack (`pdf2epub-audit`)
 - `llmdiff/` — L3 LLM visual diff scaffold (`pdf2epub-llmdiff`, optional)
 
