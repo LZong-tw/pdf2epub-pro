@@ -6,6 +6,8 @@ occurrence of that text in the markdown with `[text](uri)`.
 """
 import argparse
 import ctypes
+import hashlib
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -17,6 +19,19 @@ import pypdfium2.raw as raw
 # (rare but happens — e.g. AWS Well-Architected cross-references), prepend
 # this base so the EPUB ends up with a valid clickable absolute URL.
 DEFAULT_REL_URI_BASE = "https://docs.aws.amazon.com/"
+
+# Annotation extraction is deterministic: the (rect, URI) pairs only change
+# when the source PDF itself changes.  Cache by path + mtime + size so a re-
+# extraction is forced when the PDF is replaced.
+_LINK_CACHE_DIR = Path.home() / ".cache" / "pdf2epub-links"
+
+
+def _pdf_cache_path(pdf_path: Path) -> Path:
+    _LINK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    st = pdf_path.stat()
+    raw_key = f"{pdf_path.resolve()}|{st.st_mtime_ns}|{st.st_size}"
+    h = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:16]
+    return _LINK_CACHE_DIR / f"{h}.json"
 
 
 def _normalize_uri(uri: str, base: str = DEFAULT_REL_URI_BASE) -> str:
@@ -53,7 +68,15 @@ def _is_safe_key(key: str) -> bool:
     return True
 
 
-def extract_links(pdf_path: Path):
+def extract_links(pdf_path: Path, *, no_cache: bool = False):
+    cp = _pdf_cache_path(pdf_path)
+    if not no_cache and cp.exists():
+        cached = json.loads(cp.read_text(encoding="utf-8"))
+        print(f"[restore-links] cache hit -> {len(cached)} pairs ({cp.name})",
+              flush=True)
+        return [tuple(p) for p in cached]
+
+    print(f"[restore-links] scanning {pdf_path.name} ...", flush=True)
     pdf = pdfium.PdfDocument(str(pdf_path))
     pairs = []
     for pi in range(len(pdf)):
@@ -98,6 +121,10 @@ def extract_links(pdf_path: Path):
                     raw.FPDFPage_CloseAnnot(a)
         finally:
             raw.FPDFText_ClosePage(textpage)
+
+    cp.write_text(json.dumps(pairs, ensure_ascii=False), encoding="utf-8")
+    print(f"[restore-links] {len(pairs)} link annotations found "
+          f"(cached -> {cp.name})", flush=True)
     return pairs
 
 
@@ -158,10 +185,9 @@ def restore(md_text: str, pairs):
     return "\n".join(out_lines), count
 
 
-def restore_pdf_links(pdf_path: Path, md_in: Path, md_out: Path) -> int:
-    print(f"[restore-links] scanning {pdf_path.name} ...", flush=True)
-    pairs = extract_links(pdf_path)
-    print(f"[restore-links] {len(pairs)} link annotations found", flush=True)
+def restore_pdf_links(pdf_path: Path, md_in: Path, md_out: Path,
+                      *, no_cache: bool = False) -> int:
+    pairs = extract_links(pdf_path, no_cache=no_cache)
     text = md_in.read_text(encoding="utf-8")
     new_text, n = restore(text, pairs)
     md_out.write_text(new_text, encoding="utf-8")
@@ -174,8 +200,11 @@ def main(argv=None):
     p.add_argument("pdf")
     p.add_argument("md_in")
     p.add_argument("md_out")
+    p.add_argument("--no-cache", action="store_true",
+                   help="Force re-extraction of PDF annotations.")
     args = p.parse_args(argv)
-    restore_pdf_links(Path(args.pdf), Path(args.md_in), Path(args.md_out))
+    restore_pdf_links(Path(args.pdf), Path(args.md_in), Path(args.md_out),
+                      no_cache=args.no_cache)
 
 
 if __name__ == "__main__":
