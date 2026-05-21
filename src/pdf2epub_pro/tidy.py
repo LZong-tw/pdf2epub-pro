@@ -228,22 +228,39 @@ _AWS_CORPUS_FIXES = [
     (re.compile(r"\bWellArchitected\b"), "Well-Architected"),
 ]
 
-# Markdown→HTML slug derivation produces invalid IDs from headings whose text
-# starts with a digit. Rewriting `## 1. Foo` to `## Step 1: Foo` keeps the
-# enumeration legible while making the slug start with a letter.
-_DIGIT_HEADING_RE = re.compile(r"^(#+)\s+(\d+)[.\)]?\s+(.+?)\s*$")
+# Markdown→HTML slug derivation produces invalid IDs from headings whose
+# text starts with a digit (or only contains punctuation). We rewrite them
+# to start with a letter while keeping the original information.
+_NUMERIC_HEADING_RE = re.compile(r"^(#+)\s+(\d.*)$")
+_EMPTY_HEADING_RE = re.compile(r"^#+\s+[\W_]+\s*$")  # only punctuation/whitespace
+_ENUM_RE = re.compile(r"^(\d+)[.\)]\s+(.+)$")        # "1. Foo" or "1) Foo"
+_PLAIN_NUM_RE = re.compile(r"^(\d+)\s+(.+)$")        # "1 Foo"
 
 
 def fix_digit_headings(lines):
     out = []
     for line in lines:
-        m = _DIGIT_HEADING_RE.match(line)
-        if m:
-            hashes, num, rest = m.group(1), m.group(2), m.group(3)
-            rest = rest.rstrip(": ：.")
-            out.append(f"{hashes} Step {num}: {rest}")
-        else:
+        # Drop empty / punctuation-only headings — they generate IDs like "-"
+        # that, with Calibre's auto-disambiguator, become "-_10", "-_11"…
+        if _EMPTY_HEADING_RE.match(line):
+            continue
+        m = _NUMERIC_HEADING_RE.match(line)
+        if not m:
             out.append(line)
+            continue
+        hashes = m.group(1)
+        rest = m.group(2).strip().rstrip(":：.")
+        em = _ENUM_RE.match(rest)
+        if em:
+            out.append(f"{hashes} Step {em.group(1)}: {em.group(2)}")
+            continue
+        pm = _PLAIN_NUM_RE.match(rest)
+        if pm:
+            out.append(f"{hashes} Step {pm.group(1)}: {pm.group(2)}")
+            continue
+        # Fallback for things like "24×7 provisioning..." — keep verbatim
+        # but inject a letter prefix so the slug starts with one.
+        out.append(f"{hashes} Ref. {rest}")
     return out
 
 

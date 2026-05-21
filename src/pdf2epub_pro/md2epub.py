@@ -34,6 +34,11 @@ def md2epub(md_in: Path, epub_out: Path, *,
         # non-H1 headings keep flowing inline.
         "--chapter", "/",
         "--chapter-mark", "none",
+        # Enable python-markdown extras we need: pipe tables, fenced code
+        # blocks (so trafilatura output with ``` / | renders correctly),
+        # footnotes, abbreviations, smart-em-dashes, and definition lists.
+        "--md-extensions",
+        "tables,fenced_code,footnotes,abbr,smarty,def_list",
         "--level1-toc", "//*[local-name()='h1']",
         "--level2-toc", "//*[local-name()='h2']",
         "--level3-toc", "//*[local-name()='h3']",
