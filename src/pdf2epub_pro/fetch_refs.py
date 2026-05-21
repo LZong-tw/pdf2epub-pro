@@ -22,13 +22,30 @@ from .tidy import fix_digit_headings_text, strip_orphan_dashes
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
-# Long backtick-quoted inline code blocks (>200 chars) are almost always
-# `<code>` HTML elements that Trafilatura flattened into one giant inline
-# span. Promote them to fenced blocks so they render as readable code.
+# Long single-line backtick spans (>200 chars) are almost always `<code>`
+# HTML elements that Trafilatura flattened into one giant inline span;
+# promote them to fenced blocks so they render as readable code.
 _INLINE_BLOCK_RE = re.compile(r"`([^`\n]{200,})`")
-# Inline code containing both braces and newlines is almost certainly meant
-# to be multi-line.
+# Multiline backtick spans need a stricter check — Trafilatura sometimes
+# breaks a regular sentence inside a `<code>foo</code>` span across lines,
+# producing markdown that looks like multiline code but is really prose.
 _INLINE_MULTILINE_RE = re.compile(r"`([^`]*\n[^`]*)`")
+
+
+def _looks_like_code(text: str) -> bool:
+    """Heuristic for the multiline backtick promotion: only treat the span
+    as code if it actually has code-like syntactic markers."""
+    if "{" in text and "}" in text:
+        return True
+    if ";" in text and "\n" in text:
+        return True
+    if re.search(r"\n[ \t]{2,}\S", text):  # any indented continuation
+        return True
+    if re.search(r"(?m)^\s*[A-Za-z_][A-Za-z0-9_-]*\s*:\s*\S", text):
+        return True  # key: value (YAML / properties)
+    if re.search(r"(?m)^\s*\$\s+\S", text) or re.search(r"\baws\s+\w+", text):
+        return True  # shell prompt or `aws <command>`
+    return False
 
 
 def _fence_inline_code(body: str) -> str:
@@ -43,13 +60,38 @@ def _fence_inline_code(body: str) -> str:
             return "bash"
         return ""
 
-    def repl(m):
-        body = m.group(1).strip()
-        lang = lang_for(body)
-        return f"\n\n```{lang}\n{body}\n```\n\n"
-    body = _INLINE_MULTILINE_RE.sub(repl, body)
-    body = _INLINE_BLOCK_RE.sub(repl, body)
+    def block_repl(m):
+        text = m.group(1).strip()
+        lang = lang_for(text)
+        return f"\n\n```{lang}\n{text}\n```\n\n"
+
+    def multiline_repl(m):
+        text = m.group(1)
+        if not _looks_like_code(text):
+            # Treat as prose: drop the stray backticks rather than wrapping
+            # the sentence in a misleading code block.
+            return text
+        return block_repl(m)
+
+    body = _INLINE_MULTILINE_RE.sub(multiline_repl, body)
+    body = _INLINE_BLOCK_RE.sub(block_repl, body)
     return body
+
+
+# Trafilatura sometimes outputs PDF CLI placeholders like '<ACCOUNT_ID>' or
+# '<tooling account ID>' as raw HTML-ish text. python-markdown then treats
+# them as malformed HTML tags and emits literal '<account id="">' elements
+# which collide across files (empty id, empty id) and fail EPUB validation.
+# Escape angle brackets inside backtick spans where placeholders typically
+# live, so they render as literal text instead of being parsed as HTML.
+_BACKTICK_WITH_ANGLE_RE = re.compile(r"`([^`\n]*<[^`\n]*)`")
+
+
+def _escape_placeholders_in_code(body: str) -> str:
+    def repl(m):
+        inner = m.group(1).replace("<", "&lt;").replace(">", "&gt;")
+        return f"`{inner}`"
+    return _BACKTICK_WITH_ANGLE_RE.sub(repl, body)
 
 
 # Trafilatura sometimes emits "tables" from AWS doc pages without the
@@ -280,6 +322,7 @@ def fetch_one(url: str):
         body = _fix_mojibake(body)
         body = _absolutize_links(body, url)
         body = _fix_broken_tables(body)
+        body = _escape_placeholders_in_code(body)
         body = _fence_inline_code(body)
         return {"title": title, "url": url, "content": body, "cached": True}
 
@@ -322,6 +365,7 @@ def fetch_one(url: str):
 
     body = _absolutize_links(body, url)
     body = _fix_broken_tables(body)
+    body = _escape_placeholders_in_code(body)
     body = _fence_inline_code(body)
     cp.write_text(f"<!-- title: {title} -->\n{body}", encoding="utf-8")
     time.sleep(DELAY)

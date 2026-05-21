@@ -2,6 +2,7 @@
 from pdf2epub_pro.fetch_refs import (
     _absolutize_links,
     _demote_headings,
+    _escape_placeholders_in_code,
     _fence_inline_code,
     _fix_broken_tables,
     _fix_mojibake,
@@ -119,6 +120,24 @@ def test_fence_inline_code_handles_multiline_backtick_span():
     body = "Use this template:\n`\nAWSTemplateFormatVersion: '2010'\nResources:\n  Foo: Bar\n`\nDone."
     out = _fence_inline_code(body)
     assert "```" in out
+
+
+def test_fence_inline_code_keeps_prose_unfenced():
+    # REGRESSION: a backtick span that wraps a prose sentence broken across
+    # two lines must NOT be promoted to a code block.  Earlier behaviour
+    # turned 'command in the AWS CLI:' into '<pre><code>command in the AWS
+    # CLI:</code></pre>'.
+    body = "Run `create-repository\ncommand in the AWS CLI:` then continue."
+    out = _fence_inline_code(body)
+    assert "```" not in out
+    assert "command in the AWS CLI:" in out
+
+
+def test_escape_placeholders_in_code_handles_cli_angle_brackets():
+    body = "Set `export ACCOUNT=<TOOLING_ACCOUNT_ID>` in your shell."
+    out = _escape_placeholders_in_code(body)
+    assert "&lt;TOOLING_ACCOUNT_ID&gt;" in out
+    assert "<TOOLING_ACCOUNT_ID>" not in out
 
 
 # -------------------------------------------------------------------- filter
