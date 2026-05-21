@@ -11,9 +11,27 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urljoin
 
 import requests
 import trafilatura
+
+
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _absolutize_links(body: str, source_url: str) -> str:
+    """Trafilatura output preserves relative links from the source page.
+    Inside an EPUB those refs (./foo.html, #section-X) don't resolve. Convert
+    them to absolute URLs against the article URL so they at least open in
+    the user's browser.
+    """
+    def repl(m):
+        text, href = m.group(1), m.group(2).strip()
+        if href.startswith(("http://", "https://", "mailto:", "tel:")):
+            return m.group(0)
+        return f"[{text}]({urljoin(source_url, href)})"
+    return _MD_LINK_RE.sub(repl, body)
 
 CACHE = Path.home() / ".cache" / "pdf2epub-refs"
 
@@ -67,6 +85,8 @@ def fetch_one(url: str):
         m = re.match(r"<!-- title: (.*?) -->\n", text)
         title = m.group(1) if m else url
         body = text[m.end():] if m else text
+        # Re-absolutize relative links from older cached entries (idempotent).
+        body = _absolutize_links(body, url)
         return {"title": title, "url": url, "content": body, "cached": True}
 
     try:
@@ -94,6 +114,7 @@ def fetch_one(url: str):
         sys.stderr.write(f"[fetch-refs] short body, skipping {url}\n")
         return None
 
+    body = _absolutize_links(body, url)
     cp.write_text(f"<!-- title: {title} -->\n{body}", encoding="utf-8")
     time.sleep(DELAY)
     return {"title": title, "url": url, "content": body, "cached": False}

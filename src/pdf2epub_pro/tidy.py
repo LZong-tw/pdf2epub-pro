@@ -228,6 +228,24 @@ _AWS_CORPUS_FIXES = [
     (re.compile(r"\bWellArchitected\b"), "Well-Architected"),
 ]
 
+# Markdown→HTML slug derivation produces invalid IDs from headings whose text
+# starts with a digit. Rewriting `## 1. Foo` to `## Step 1: Foo` keeps the
+# enumeration legible while making the slug start with a letter.
+_DIGIT_HEADING_RE = re.compile(r"^(#+)\s+(\d+)[.\)]?\s+(.+?)\s*$")
+
+
+def fix_digit_headings(lines):
+    out = []
+    for line in lines:
+        m = _DIGIT_HEADING_RE.match(line)
+        if m:
+            hashes, num, rest = m.group(1), m.group(2), m.group(3)
+            rest = rest.rstrip(": ：.")
+            out.append(f"{hashes} Step {num}: {rest}")
+        else:
+            out.append(line)
+    return out
+
 
 def apply_corpus_fixes(lines, ruleset):
     if ruleset != "aws":
@@ -253,6 +271,7 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     lines = heal_list_gaps(lines)
     lines = heal_hyphen_breaks(lines)
     lines = heal_broken_sentences(lines)
+    lines = fix_digit_headings(lines)
     lines = apply_corpus_fixes(lines, ruleset)
     return "\n".join(lines) + "\n"
 

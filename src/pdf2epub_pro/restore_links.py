@@ -13,6 +13,18 @@ from pathlib import Path
 import pypdfium2 as pdfium
 import pypdfium2.raw as raw
 
+# When a PDF link annotation contains a relative path instead of a full URL
+# (rare but happens — e.g. AWS Well-Architected cross-references), prepend
+# this base so the EPUB ends up with a valid clickable absolute URL.
+DEFAULT_REL_URI_BASE = "https://docs.aws.amazon.com/"
+
+
+def _normalize_uri(uri: str, base: str = DEFAULT_REL_URI_BASE) -> str:
+    uri = uri.replace("\\", "/").strip()
+    if "://" in uri or uri.startswith(("mailto:", "tel:", "#")):
+        return uri
+    return base + uri.lstrip("/")
+
 
 _MD_LINK_RE = re.compile(r"\[[^\]]+\]\([^)]+\)")
 
@@ -61,7 +73,8 @@ def extract_links(pdf_path: Path):
                         continue
                     buf = ctypes.create_string_buffer(n_uri)
                     raw.FPDFAction_GetURIPath(pdf.raw, action, buf, n_uri)
-                    uri = buf.value.decode("utf-8", errors="replace")
+                    uri = _normalize_uri(
+                        buf.value.decode("utf-8", errors="replace"))
 
                     rect = raw.FS_RECTF()
                     if not raw.FPDFAnnot_GetRect(a, ctypes.byref(rect)):
