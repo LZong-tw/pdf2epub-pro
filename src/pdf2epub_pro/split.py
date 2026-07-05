@@ -52,9 +52,34 @@ def run_docling(chunk_pdf: Path, out_dir: Path, with_images: bool):
     return next(iter(out_dir.glob("*.md")), None)
 
 
+# NOTE: the character class excludes only `)` and newlines — NOT all
+# whitespace.  Docling emits the image as `![Image](<absolute path>)` and
+# on Windows that path routinely contains spaces ("C:\Users\First Last\...",
+# "C:\Program Files\...").  A `[^)\s]` class stops at the first space, so
+# the path never matches, `absorb_artifacts` moves the image but leaves the
+# markdown ref pointing at the now-deleted temp path, and every diagram
+# silently disappears from the EPUB.  Bound the path by the closing paren of
+# the markdown image syntax (and newlines) instead of by whitespace.
 _IMG_PATH_RE = re.compile(
-    r"(?:[A-Za-z]:[\\/]|/)[^)\s]*?image_\d+_[0-9a-f]+\.png", re.IGNORECASE
+    r"(?:[A-Za-z]:[\\/]|/)[^)\r\n]*?image_\d+_[0-9a-f]+\.png", re.IGNORECASE
 )
+
+
+def safe_artifacts_dirname(stem: str) -> str:
+    """Return a filesystem- and URL-safe artifacts dir name for ``stem``.
+
+    The returned name is embedded verbatim into every rewritten image ref
+    as a relative markdown path (``<name>/c0001_image_….png``).  If it
+    contains spaces — as it does whenever the source PDF filename does,
+    e.g. ``Distributed Systems 4th Edition`` — the ref is not a valid
+    CommonMark link destination, so markdown-it / pandoc emit no ``<img>``
+    at all and every diagram silently vanishes from the EPUB.  Collapse
+    anything outside a conservative ``[A-Za-z0-9._-]`` set to ``_`` so the
+    ref always parses and always resolves back to the on-disk directory
+    (which is created from this same name).
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("_") or "doc"
+    return f"{safe}_artifacts"
 
 
 def absorb_artifacts(md_text, chunk_out, md_stem, global_artifacts, chunk_index):
@@ -81,7 +106,7 @@ def split_pdf_to_md(pdf_path: Path, out_md: Path, chunk_size: int = 20,
     """Programmatic entry: run the chunked pipeline; returns out_md."""
     pdf_path = pdf_path.resolve()
     out_md = out_md.resolve()
-    global_artifacts = out_md.with_name(out_md.stem + "_artifacts")
+    global_artifacts = out_md.with_name(safe_artifacts_dirname(out_md.stem))
     if with_images and global_artifacts.exists():
         shutil.rmtree(global_artifacts)
 
