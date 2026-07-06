@@ -96,7 +96,8 @@ def test_split_pdf_to_md_emits_space_free_refs_for_spaced_stem(tmp_path, monkeyp
     def fake_split_pdf(src, chunk_size, work_dir):
         return [(work_dir / "chunk_0.pdf", 0, 1)], 1
 
-    def fake_run_docling(chunk_pdf, out_dir, with_images):
+    def fake_run_docling(chunk_pdf, out_dir, with_images,
+                         enrich_formula=False):
         art = out_dir / "c_artifacts"
         art.mkdir()
         png = art / "image_000000_deadbeef.png"
@@ -117,3 +118,15 @@ def test_split_pdf_to_md_emits_space_free_refs_for_spaced_stem(tmp_path, monkeyp
     ref_line = next(l for l in text.splitlines() if "image_000000" in l)
     dest = re.search(r"\(([^)]*image_000000_deadbeef\.png)\)", ref_line)
     assert dest and " " not in dest.group(1), f"ref still has spaces: {ref_line!r}"
+
+
+def test_docling_cmd_formula_toggle(monkeypatch, tmp_path):
+    # REGRESSION: --math must flip docling's formula enrichment; without
+    # it the 103 formulas of a math textbook stay "formula-not-decoded".
+    monkeypatch.setattr(split, "docling_path", lambda: "docling")
+    off = split._docling_cmd(tmp_path / "c.pdf", tmp_path, True,
+                             enrich_formula=False)
+    on = split._docling_cmd(tmp_path / "c.pdf", tmp_path, True,
+                            enrich_formula=True)
+    assert "--no-enrich-formula" in off and "--enrich-formula" not in off
+    assert "--enrich-formula" in on and "--no-enrich-formula" not in on

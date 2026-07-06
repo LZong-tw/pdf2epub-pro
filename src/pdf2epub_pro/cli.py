@@ -76,7 +76,8 @@ def cmd_convert(args):
 
     # 1. split
     split_pdf_to_md(pdf, raw_md, chunk_size=args.chunk_size,
-                    with_images=not args.no_images)
+                    with_images=not args.no_images,
+                    enrich_formula=args.math)
 
     # 2. tidy
     tidy_md.write_text(
@@ -137,9 +138,7 @@ def cmd_convert(args):
     # 6. md → EPUB via the selected synthesizer (default: pandoc — see
     #    _SYNTHESIZERS for trade-off notes).
     synth = _SYNTHESIZERS[args.synthesizer]
-    synth(
-        final_md,
-        epub_out,
+    synth_kwargs = dict(
         title=args.title,
         authors=args.authors,
         language=args.language,
@@ -147,6 +146,13 @@ def cmd_convert(args):
         tags=args.tags,
         cover=cover_arg,
     )
+    if args.synthesizer == "pandoc":
+        synth_kwargs["math"] = args.math
+    elif args.math:
+        print("[pdf2epub-pro] note: --math renders MathML only via the "
+              f"pandoc synthesizer; with --synthesizer {args.synthesizer} "
+              "the OCR'd formulas remain literal $$...$$ text.")
+    synth(final_md, epub_out, **synth_kwargs)
 
     print(f"\n[pdf2epub-pro] done: {epub_out}")
     print(f"               build artifacts kept in: {build}")
@@ -186,6 +192,15 @@ def build_parser():
     c.add_argument("--tags", default="")
     c.add_argument("--chunk-size", type=int, default=20)
     c.add_argument("--no-images", action="store_true")
+    c.add_argument(
+        "--math",
+        action="store_true",
+        help="OCR mathematical formulas (docling --enrich-formula) and "
+             "render them as MathML via the pandoc synthesizer.  Off by "
+             "default: it adds ~50%% to parse time and math-free "
+             "documents often contain literal '$' that must not be "
+             "treated as math delimiters.",
+    )
     c.add_argument("--ruleset", default="aws", choices=["aws", "generic"])
     c.add_argument("--no-fetch-refs", action="store_true")
     c.add_argument("--fetch-delay", type=float, default=1.5)

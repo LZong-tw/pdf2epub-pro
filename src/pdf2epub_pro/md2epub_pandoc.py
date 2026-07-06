@@ -27,7 +27,7 @@ from ._tools import pandoc_path, share_dir
 # `raw_html` is intentionally left ON: shipped tables contain inline
 # `<br/>` for line wrap, and tidy emits a few HTML fragments we need
 # pandoc to pass through verbatim.
-_READER_EXTS = (
+_BASE_READER_EXTS = (
     "markdown"
     "+pipe_tables"
     "+fenced_code_blocks"
@@ -47,12 +47,28 @@ _READER_EXTS = (
     # preserving link target consistency — pandoc updates every internal
     # href against the new IDs in one pass.
     "+ascii_identifiers"
-    "-tex_math_dollars"
-    "-tex_math_single_backslash"
-    "-tex_math_double_backslash"
-    "-raw_tex"
-    "-latex_macros"
 )
+
+
+def _reader_exts(math: bool = False) -> str:
+    """Reader-extension string; enable dollar-delimited math when asked.
+
+    tex_math_dollars is OFF by default: math-free documents routinely
+    carry literal `$` (prices, shell snippets) that must NOT be reparsed
+    as math delimiters.  With docling formula enrichment (the pipeline's
+    --math flag) the body carries real `$$...$$`, so we switch it on and
+    let the epub writer emit MathML.  The single/double-backslash and
+    raw-tex variants stay off either way -- docling emits dollar-
+    delimited formulas, not backslash-delimited or raw LaTeX macros.
+    """
+    return _BASE_READER_EXTS + (
+        "+tex_math_dollars" if math else "-tex_math_dollars"
+    ) + (
+        "-tex_math_single_backslash"
+        "-tex_math_double_backslash"
+        "-raw_tex"
+        "-latex_macros"
+    )
 
 
 def _build_metadata_yaml(*,
@@ -126,6 +142,7 @@ def md2epub_pandoc(md_in: Path, epub_out: Path, *,
                    tags: str | None = None,
                    cover: Path | None = None,
                    extra_css: Path | None = None,
+                   math: bool = False,
                    book_producer: str = "pdf2epub-pro") -> Path:
     """Convert markdown to EPUB via pandoc. Returns epub_out.
 
@@ -207,7 +224,7 @@ def md2epub_pandoc(md_in: Path, epub_out: Path, *,
 
         cmd = [
             pandoc_path(),
-            "--from", _READER_EXTS,
+            "--from", _reader_exts(math),
             "--lua-filter", str(share_dir() / "pandoc" / "dedup-ids.lua"),
             "--to", "epub3",
             "-o", str(epub_out),
@@ -223,6 +240,9 @@ def md2epub_pandoc(md_in: Path, epub_out: Path, *,
             "--standalone",
             str(md_in),
         ]
+        if math:
+            # Render the dollar-delimited formulas as MathML in the EPUB.
+            cmd.append("--mathml")
         if extra_css:
             cmd += ["--css", str(extra_css)]
         if cover:

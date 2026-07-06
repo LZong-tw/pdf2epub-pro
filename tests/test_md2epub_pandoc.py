@@ -296,3 +296,45 @@ def test_dedupe_epub_ids_no_op_when_no_duplicates(tmp_path):
         zf.writestr("b.xhtml", b)
 
     assert mod._dedupe_epub_ids(epub) == 0
+
+
+def test_reader_exts_math_toggle():
+    assert "+tex_math_dollars" in mod._reader_exts(math=True)
+    assert "-tex_math_dollars" in mod._reader_exts(math=False)
+    # never enable the backslash/raw-tex variants -- docling emits $-math
+    assert "-raw_tex" in mod._reader_exts(math=True)
+
+
+def test_math_true_renders_mathml(tmp_path):
+    # REGRESSION: docling formula enrichment emits `$$...$$`, but the
+    # reader had tex_math_dollars OFF, so the LaTeX shipped as literal
+    # text.  With math=True it must become MathML.
+    md = tmp_path / "m.md"
+    md.write_text(
+        "# Ch\n\nThe estimator is\n\n$$n = -\\frac{m}{k}\\ln(1-x)$$\n",
+        encoding="utf-8",
+    )
+    epub = tmp_path / "m.epub"
+    mod.md2epub_pandoc(md, epub, title="M", math=True)
+    blob = "".join(
+        zipfile.ZipFile(epub).read(n).decode("utf-8", "replace")
+        for n in zipfile.ZipFile(epub).namelist() if n.endswith(".xhtml")
+    )
+    assert "<math" in blob
+    assert "$$" not in blob
+
+
+def test_math_false_leaves_dollar_prose_untouched(tmp_path):
+    # The default must NOT turn literal prose dollars into math -- a book
+    # that says "for $500" is not writing an equation.
+    md = tmp_path / "p.md"
+    md.write_text("# Ch\n\nAlice paid $500 and Bob paid $600 total.\n",
+                  encoding="utf-8")
+    epub = tmp_path / "p.epub"
+    mod.md2epub_pandoc(md, epub, title="P", math=False)
+    blob = "".join(
+        zipfile.ZipFile(epub).read(n).decode("utf-8", "replace")
+        for n in zipfile.ZipFile(epub).namelist() if n.endswith(".xhtml")
+    )
+    assert "<math" not in blob
+    assert "$500" in blob and "$600" in blob

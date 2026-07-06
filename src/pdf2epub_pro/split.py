@@ -29,20 +29,30 @@ def split_pdf(src: Path, chunk_size: int, work_dir: Path):
     return out, total
 
 
-def run_docling(chunk_pdf: Path, out_dir: Path, with_images: bool):
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1"}
-    cmd = [
+def _docling_cmd(chunk_pdf: Path, out_dir: Path, with_images: bool,
+                 enrich_formula: bool = False):
+    """Build the docling CLI invocation (extracted so it is unit-testable
+    without launching the real ML pipeline)."""
+    return [
         docling_path(), str(chunk_pdf),
         "--pipeline", "standard",
         "--to", "md",
         "--image-export-mode", "referenced" if with_images else "placeholder",
         "--no-enrich-code",
-        "--no-enrich-formula",
+        # Formula OCR is expensive (~+50% wall time) and pointless on
+        # math-free documents, so it stays off unless the caller opts in.
+        "--enrich-formula" if enrich_formula else "--no-enrich-formula",
         "--no-enrich-picture-classes",
         "--no-enrich-picture-description",
         "--no-enrich-chart-extraction",
         "--output", str(out_dir),
     ]
+
+
+def run_docling(chunk_pdf: Path, out_dir: Path, with_images: bool,
+                enrich_formula: bool = False):
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1"}
+    cmd = _docling_cmd(chunk_pdf, out_dir, with_images, enrich_formula)
     r = subprocess.run(cmd, env=env, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     if r.returncode != 0:
@@ -102,7 +112,8 @@ def absorb_artifacts(md_text, chunk_out, md_stem, global_artifacts, chunk_index)
 
 
 def split_pdf_to_md(pdf_path: Path, out_md: Path, chunk_size: int = 20,
-                    with_images: bool = True) -> Path:
+                    with_images: bool = True,
+                    enrich_formula: bool = False) -> Path:
     """Programmatic entry: run the chunked pipeline; returns out_md."""
     pdf_path = pdf_path.resolve()
     out_md = out_md.resolve()
@@ -124,7 +135,8 @@ def split_pdf_to_md(pdf_path: Path, out_md: Path, chunk_size: int = 20,
             chunk_out = tmp / f"out_{start:05d}"
             chunk_out.mkdir()
             print(f"[{i}/{len(chunks)}] {label} ...", flush=True)
-            md = run_docling(chunk_pdf, chunk_out, with_images)
+            md = run_docling(chunk_pdf, chunk_out, with_images,
+                             enrich_formula=enrich_formula)
             if md is None:
                 print(f"[{i}/{len(chunks)}] {label} FAILED", flush=True)
                 parts.append(f"\n<!-- [chunk {label} failed] -->\n")
