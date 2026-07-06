@@ -17,6 +17,7 @@ from pdf2epub_pro.tidy import (
     strip_chunk_dividers,
     strip_emphasis_inner_space,
     strip_orphan_dashes,
+    strip_placeholder_image_alt,
     strip_orphan_page_numbers,
     strip_toc,
     tidy,
@@ -80,6 +81,29 @@ def test_strip_toc_survives_page_number_interruptions():
     out = strip_toc(src)
     assert not any(l.lstrip().startswith("|") for l in out)
     assert "## PREFACE" in out
+
+
+def test_strip_placeholder_image_alt():
+    # REGRESSION: docling stamps every extracted image with alt text
+    # "Image"; pandoc's implicit_figures turned that into a visible
+    # "Image" figcaption under all 249 diagrams of a book.
+    src = [
+        "![Image](art/diagram.png)",
+        "![ image ](x.png) and ![Image](y.png)",
+    ]
+    out = strip_placeholder_image_alt(src)
+    assert out[0] == "![](art/diagram.png)"
+    assert out[1] == "![](x.png) and ![](y.png)"
+
+
+def test_strip_placeholder_image_alt_keeps_real_captions():
+    src = ["![Figure 4.2: RPC flow](art/rpc.png)"]
+    assert strip_placeholder_image_alt(src) == src
+
+
+def test_strip_placeholder_image_alt_skips_fences():
+    src = ["```", "![Image](literal.png)", "```"]
+    assert strip_placeholder_image_alt(src) == src
 
 
 def test_strip_toc_keeps_prose_contents_section():
@@ -683,7 +707,9 @@ def test_tidy_end_to_end_aws_pipeline():
         "[the doc](https://docs.aws.amazon.com/wellarchitected/latest/foo.html)"
         in l for l in lines
     )
-    # IMAGE not rewritten — most important regression target.
+    # IMAGE PATH not rewritten — most important regression target.
+    # (The placeholder alt text is stripped by strip_placeholder_image_alt,
+    # but the local path must never gain a URL base.)
     assert any(
-        "![Image](local_artifacts/diagram.png)" in l for l in lines
+        "![](local_artifacts/diagram.png)" in l for l in lines
     )

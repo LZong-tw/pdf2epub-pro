@@ -351,6 +351,23 @@ def space_markdown_adjacency(lines):
     return out
 
 
+# Docling stamps every extracted image with the literal alt text "Image".
+# Pandoc's implicit_figures turns a lone image with non-empty alt into a
+# <figure> whose <figcaption> is the alt text -- so every diagram in the
+# book renders with a junk visible "Image" caption.  Stripping the
+# placeholder (and only the placeholder -- real captions survive) makes
+# pandoc emit a plain <img> instead.
+_IMG_PLACEHOLDER_ALT_RE = re.compile(r"!\[\s*image\s*\](?=\()", re.IGNORECASE)
+
+
+def strip_placeholder_image_alt(lines):
+    mask = _fence_mask(lines)
+    return [
+        line if mask[i] else _IMG_PLACEHOLDER_ALT_RE.sub("![]", line)
+        for i, line in enumerate(lines)
+    ]
+
+
 def normalize_relative_links(lines, base="https://docs.aws.amazon.com/"):
     """Rewrite `[text](href)` where href is a relative path (no scheme) or
     contains Windows backslashes — both happen when Docling pulls a PDF's
@@ -766,6 +783,7 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     # case a regex rule accidentally produced a whitespace-padded shape
     # (it shouldn't with the `\S … \S` boundary, but this is cheap insurance).
     lines = strip_emphasis_inner_space(lines)
+    lines = strip_placeholder_image_alt(lines)
     lines = normalize_relative_links(lines)
     lines = apply_corpus_fixes(lines, ruleset)
     return "\n".join(lines) + "\n"
