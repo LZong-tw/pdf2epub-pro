@@ -17,6 +17,7 @@ from pdf2epub_pro.tidy import (
     strip_chunk_dividers,
     strip_emphasis_inner_space,
     strip_orphan_dashes,
+    escape_prose_dollars,
     strip_placeholder_image_alt,
     strip_orphan_page_numbers,
     strip_toc,
@@ -713,3 +714,50 @@ def test_tidy_end_to_end_aws_pipeline():
     assert any(
         "![](local_artifacts/diagram.png)" in l for l in lines
     )
+
+
+# ------------------------------------------------------- math dollar escaping
+def test_escape_prose_dollars_protects_display_math():
+    # REGRESSION (adversarial verify): with --math, pandoc's
+    # tex_math_dollars swallowed the prose between a price '$5' and a
+    # later 'done$', deleting the words.  Escape prose '$', keep $$math$$.
+    src = [
+        r"A node costs $5 but the pipeline uses a done$ sentinel token.",
+        r"$$n = -\frac{m}{k}\ln(1-x)$$",
+    ]
+    out = escape_prose_dollars(src)
+    assert out[0] == r"A node costs \$5 but the pipeline uses a done\$ sentinel token."
+    assert out[1] == r"$$n = -\frac{m}{k}\ln(1-x)$$"  # display math untouched
+
+
+def test_escape_prose_dollars_keeps_code_spans():
+    src = ["Set " + chr(96) + "$PATH" + chr(96) + " and pay $5."]
+    out = escape_prose_dollars(src)
+    assert out[0] == "Set " + chr(96) + "$PATH" + chr(96) + " and pay \\$5."
+
+
+def test_escape_prose_dollars_skips_fenced_code():
+    src = [chr(96)*3, "export PS1='$ '", "echo $HOME", chr(96)*3, "Prose $5."]
+    out = escape_prose_dollars(src)
+    assert out[1] == "export PS1='$ '"      # fenced code verbatim
+    assert out[2] == "echo $HOME"
+    assert out[4] == "Prose \\$5."           # prose still escaped
+
+
+def test_escape_prose_dollars_idempotent_on_escaped():
+    src = [r"already \$escaped"]
+    assert escape_prose_dollars(src) == src
+
+
+def test_tidy_math_escapes_prose_dollars():
+    src = "A node costs $5 but a done$ sentinel.\n\n$$x^2$$\n"
+    out = tidy(src, ruleset="generic", math=True)
+    assert r"\$5" in out and r"done\$" in out
+    assert "$$x^2$$" in out
+
+
+def test_tidy_without_math_leaves_dollars_literal():
+    src = "A node costs $5 but a done$ sentinel.\n"
+    out = tidy(src, ruleset="generic", math=False)
+    assert "$5" in out and "done$" in out
+    assert "\\$" not in out

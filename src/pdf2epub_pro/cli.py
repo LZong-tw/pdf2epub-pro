@@ -82,7 +82,7 @@ def cmd_convert(args):
     # 2. tidy
     tidy_md.write_text(
         tidy(raw_md.read_text(encoding="utf-8"),
-             doc_title=args.title, ruleset=args.ruleset),
+             doc_title=args.title, ruleset=args.ruleset, math=args.math),
         encoding="utf-8",
     )
 

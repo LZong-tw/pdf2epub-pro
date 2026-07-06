@@ -755,7 +755,40 @@ def apply_corpus_fixes(lines, ruleset):
     return out
 
 
-def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> str:
+# -- Math-safe dollar escaping (only under --math) ---------------------------
+# When --math turns on pandoc's tex_math_dollars, a bare '$' becomes a math
+# delimiter.  Prose routinely carries literal '$' ("costs $5", "a done$
+# sentinel"), and pandoc will happily treat the text BETWEEN two such '$'
+# as inline math -- silently deleting the words.  Docling's formula
+# enrichment only ever emits DISPLAY math ($$...$$), so we protect those
+# blocks (and code spans, where '$' is literal) and backslash-escape every
+# other '$'.  A real inline $...$ formula, if one ever appeared, would show
+# as literal text rather than corrupt the surrounding prose -- a visible,
+# recoverable degradation instead of silent loss.
+_DOLLAR_TOKEN_RE = re.compile(
+    r"(\$\$.*?\$\$)"      # 1: display-math block (single line)
+    r"|(`+[^`]*`+)"        # 2: inline code span
+    r"|(?<!\\)(\$)"       # 3: a bare, unescaped dollar
+)
+
+
+def _dollar_repl(m):
+    return r"\$" if m.group(3) else m.group(0)
+
+
+def escape_prose_dollars(lines):
+    """Backslash-escape prose '$' while leaving $$...$$ math and code spans
+    intact.  Fence-aware: fenced code is passed through verbatim (its '$'
+    are literal to pandoc already, and escaping would corrupt the code)."""
+    mask = _fence_mask(lines)
+    return [
+        line if mask[i] else _DOLLAR_TOKEN_RE.sub(_dollar_repl, line)
+        for i, line in enumerate(lines)
+    ]
+
+
+def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws",
+         math: bool = False) -> str:
     lines = text.splitlines()
     lines = strip_toc(lines)
     lines = strip_chunk_dividers(lines)
@@ -786,6 +819,9 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     lines = strip_placeholder_image_alt(lines)
     lines = normalize_relative_links(lines)
     lines = apply_corpus_fixes(lines, ruleset)
+    if math:
+        # Last, so nothing downstream re-introduces a bare '$'.
+        lines = escape_prose_dollars(lines)
     return "\n".join(lines) + "\n"
 
 
