@@ -4,12 +4,14 @@ from pdf2epub_pro.tidy import (
     consolidate_title,
     demote_subsections_aws,
     fix_digit_headings,
+    fix_digit_headings_text,
     heal_broken_sentences,
     heal_hyphen_breaks,
     heal_intra_word_spaces,
     heal_list_gaps,
     indent_lettered_sublists,
     normalize_relative_links,
+    promote_numbered_chapters,
     promote_pillars_aws,
     space_markdown_adjacency,
     strip_chunk_dividers,
@@ -40,6 +42,53 @@ def test_strip_toc_removes_dotted_leader_table():
     assert "## Table of Contents" not in out
     assert "| Section A ............ | 1 |" not in out
     assert "## First real heading" in out
+
+
+def test_strip_toc_contents_heading_with_table():
+    # REGRESSION: numbered books emit their in-book TOC as "## CONTENTS"
+    # followed by a dotted-leader table; the old regex only knew
+    # "Table of Contents", so the junk table shipped into the EPUB.
+    src = [
+        "## CONTENTS",
+        "",
+        "| Preface | Preface | xi |",
+        "| 1 Introduction | 1 Introduction | 1 |",
+        "",
+        "## PREFACE",
+        "Prose.",
+    ]
+    out = strip_toc(src)
+    assert "## CONTENTS" not in out
+    assert not any(l.startswith("|") for l in out)
+    assert "## PREFACE" in out
+
+
+def test_strip_toc_survives_page_number_interruptions():
+    # REGRESSION: docling page breaks drop orphan page-number lines into
+    # the middle of the TOC table; strip_toc stopped there and shipped
+    # the second half of the table (124 dotted-leader rows) into the EPUB.
+    src = [
+        "## CONTENTS",
+        "",
+        "| 1.1 | Foo . . . . . 3 |",
+        " 5",
+        "| 4.4 | Multicast communication . . . . . 158 |",
+        "",
+        "## PREFACE",
+        "Prose.",
+    ]
+    out = strip_toc(src)
+    assert not any(l.lstrip().startswith("|") for l in out)
+    assert "## PREFACE" in out
+
+
+def test_strip_toc_keeps_prose_contents_section():
+    # A section that happens to be titled "Contents" but is followed by
+    # prose (not a table) is real content and must survive.
+    src = ["## Contents", "", "This chapter covers packaging."]
+    out = strip_toc(src)
+    assert "## Contents" in out
+    assert "This chapter covers packaging." in out
 
 
 def test_strip_chunk_dividers_drops_horizontal_rule_lines():
@@ -371,6 +420,212 @@ def test_tidy_generic_keeps_numbered_section_headings():
     out = tidy(src, ruleset="generic")
     assert "## 1.1 From networked systems" in out.splitlines()
     assert "Ref. 1.1" not in out
+
+
+# ------------------------------------------------- numbered chapter hierarchy
+# REGRESSION: a 685-page numbered textbook shipped as ONE 10k-line
+# ch001.xhtml with a flat 440-entry TOC.  ML parsers flatten every
+# chapter/section/subsection heading to H2; nothing rebuilt the hierarchy,
+# so pandoc (--split-level=1) saw a single H1 and never split the book.
+
+
+def test_promote_numbered_chapters_merges_number_and_title():
+    src = [
+        "## 01", "", "## INTRODUCTION", "",
+        "## 1.1 Foundations", "## 1.2 Goals",
+        "## 02", "", "## ARCHITECTURES", "",
+        "## 2.1 Styles", "## 2.2 Middleware",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "# 1 INTRODUCTION" in out
+    assert "# 2 ARCHITECTURES" in out
+    assert "## 01" not in out
+    assert "## INTRODUCTION" not in out
+    assert "## 1.1 Foundations" in out  # single dot stays H2
+
+
+def test_promote_numbered_chapters_merges_split_caps_title():
+    # The parser can capture the first title word INTO the number heading:
+    # "## 08 FAULT" + "## TOLERANCE" is one chapter called FAULT TOLERANCE.
+    src = [
+        "## 7.1 Consistency", "## 7.2 Replication",
+        "## 08 FAULT", "", "## TOLERANCE",
+        "## 8.1 Introduction", "## 8.2 Resilience",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "# 8 FAULT TOLERANCE" in out
+    assert "## TOLERANCE" not in out
+
+
+def test_promote_numbered_chapters_inline_number_and_title():
+    src = [
+        "## 8.1 A", "## 8.2 B",
+        "## 09 SECURITY",
+        "## 9.1 Intro", "## 9.2 Channels",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "# 9 SECURITY" in out
+
+
+def test_promote_numbered_chapters_allcaps_boundary_gets_number():
+    # A chapter whose number heading the parser dropped entirely: the
+    # all-caps title sits between chapter 3's and chapter 4's sections,
+    # so the numbering tells us it is chapter 4.
+    src = [
+        "## 3.5 Migration", "## 3.6 Summary",
+        "## COMMUNICATION",
+        "## 4.1 Foundations", "## 4.2 RPC",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "# 4 COMMUNICATION" in out
+
+
+def test_promote_numbered_chapters_allcaps_inside_chapter_untouched():
+    # All-caps headings BETWEEN sections of the same chapter (acronym
+    # sub-heads etc.) must not be mistaken for chapter titles.
+    src = [
+        "## 3.6 Summary",
+        "## 4.1 Foundations", "## HTTP", "## 4.2 RPC", "## 4.3 MOM",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "## HTTP" in out
+
+
+def test_promote_numbered_chapters_only_last_allcaps_wins_boundary():
+    # Trailing all-caps matter of the previous chapter (exercises pages
+    # etc.) sits in the same boundary window as the real chapter title;
+    # only the LAST all-caps heading before the next numbered section is
+    # the title.
+    src = [
+        "## 3.5 M", "## 3.6 Summary",
+        "## EXERCISES", "## COMMUNICATION",
+        "## 4.1 Foundations", "## 4.2 RPC",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "# 4 COMMUNICATION" in out
+    assert "## EXERCISES" in out
+
+
+def test_promote_numbered_chapters_front_matter_all_promoted():
+    # REGRESSION: the last-in-window guard saw chapter 1's title heading
+    # ("## INTRODUCTION", half of a number+title merge) and refused to
+    # promote PREFACE, leaving front matter nested under the book title.
+    src = [
+        "## FOREWORD", "text",
+        "## PREFACE", "text",
+        "## 01", "", "## INTRODUCTION",
+        "## 1.1 A", "## 1.2 B", "## 2.1 C", "## 2.2 D",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "# FOREWORD" in out
+    assert "# PREFACE" in out
+    assert "# 1 INTRODUCTION" in out
+
+
+def test_promote_numbered_chapters_back_matter_promoted_unnumbered():
+    src = [
+        "## 8.1 A", "## 8.2 B", "## 9.1 C", "## 9.7 Summary",
+        "## INDEX", "index body", "## BIBLIOGRAPHY", "bib body",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "# INDEX" in out
+    assert "# BIBLIOGRAPHY" in out
+
+
+def test_promote_numbered_chapters_dotted_depth():
+    src = [
+        "## 1.1 Sharing", "## 1.1.1 Deep",
+        "## 1.2 Goals", "## 2.1 Styles",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "### 1.1.1 Deep" in out
+    assert "## 1.1 Sharing" in out
+
+
+def test_promote_numbered_chapters_demotes_unnumbered_subsections():
+    # An unnumbered heading inside a chapter is a sub-topic of the
+    # numbered section above it, one level deeper.
+    src = [
+        "## 1.1 Sharing", "## 1.2.2 Transparency",
+        "## Types of transparency",
+        "## 1.2.3 Openness", "## 2.1 Styles",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "### 1.2.2 Transparency" in out
+    assert "#### Types of transparency" in out
+
+
+def test_promote_numbered_chapters_ignores_unbacked_numbers():
+    # A bare number heading whose value never appears as a section major
+    # is junk, not a chapter.
+    src = [
+        "## 1.1 A", "## 1.2 B", "## 2.1 C", "## 2.2 D",
+        "## 42",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "## 42" in out
+
+
+def test_promote_numbered_chapters_skips_fenced_code():
+    # Known-bugs list: heading logic must never be fence-blind — a code
+    # listing's comments must not become chapters.
+    src = [
+        "## 1.1 A", "## 1.2 B", "## 2.1 C", "## 2.2 D",
+        "```",
+        "## 02",
+        "## FAKE CHAPTER",
+        "# 1.1 comment",
+        "```",
+    ]
+    out = promote_numbered_chapters(src)
+    assert "## 02" in out
+    assert "## FAKE CHAPTER" in out
+    assert "# 1.1 comment" in out
+
+
+def test_promote_numbered_chapters_noop_without_numbering():
+    # Gate: documents without a numbered-section signature pass through
+    # completely untouched.
+    src = ["## Intro", "## Setup", "## 1.1 Lone numbered"]
+    assert promote_numbered_chapters(src) == src
+
+
+def test_promote_numbered_chapters_drops_duplicate_title_headings():
+    # The book title repeated as a heading on the cover pages must not
+    # become a bogus chapter.
+    src = [
+        "# Distributed Systems", "",
+        "## DISTRIBUTED SYSTEMS", "",
+        "## 1.1 A", "## 1.2 B", "## 2.1 C", "## 2.2 D",
+    ]
+    out = promote_numbered_chapters(src, doc_title="Distributed Systems")
+    assert "## DISTRIBUTED SYSTEMS" not in out
+    assert "# DISTRIBUTED SYSTEMS" not in out
+
+
+def test_fix_digit_headings_text_generic_passthrough():
+    # fetch_refs post-processes the whole document through
+    # fix_digit_headings_text; with ruleset=generic it must not undo the
+    # hierarchy pass ("# 1 INTRODUCTION" -> "# Step 1: INTRODUCTION").
+    text = "# 1 INTRODUCTION\n## 1.1 Foo"
+    assert fix_digit_headings_text(text, "generic") == text
+
+
+def test_tidy_generic_rebuilds_numbered_chapter_hierarchy():
+    src = "\n".join([
+        "## 01", "", "## INTRODUCTION", "",
+        "## 1.1 From networked systems", "", "Body.", "",
+        "## 1.1.1 Distributed versus decentralized", "", "Body.", "",
+        "## 1.2 Design goals", "", "Body.", "",
+        "## 02", "", "## ARCHITECTURES", "",
+        "## 2.1 Architectural styles", "", "Body.", "",
+        "## 2.2 Middleware", "", "Body.", "",
+    ])
+    out = tidy(src, doc_title="My Book", ruleset="generic").splitlines()
+    assert "# 1 INTRODUCTION" in out
+    assert "# 2 ARCHITECTURES" in out
+    assert "## 1.1 From networked systems" in out
+    assert "### 1.1.1 Distributed versus decentralized" in out
 
 
 # ----------------------------------------------------------- lettered sublist

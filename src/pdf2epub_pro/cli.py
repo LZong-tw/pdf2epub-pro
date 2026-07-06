@@ -90,7 +90,8 @@ def cmd_convert(args):
 
     # 4. fetch external refs into appendix
     if not args.no_fetch_refs:
-        fetch_refs(linked_md, refs_md, delay=args.fetch_delay)
+        fetch_refs(linked_md, refs_md, delay=args.fetch_delay,
+                   ruleset=args.ruleset)
         final_md = refs_md
     else:
         final_md = linked_md

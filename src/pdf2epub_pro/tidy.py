@@ -8,6 +8,10 @@ Generic rules (always applied):
 - heal_list_gaps       : merge blank-line-broken lists
 - heal_broken_sentences: rejoin mid-sentence paragraph breaks
 
+Non-AWS rulesets additionally get:
+- promote_numbered_chapters : rebuild the chapter/section/subsection
+  hierarchy that ML PDF parsers flatten to a single heading level
+
 AWS-specific rules (opt-in via --ruleset aws, default ON):
 - promote_pillars       : 6 WAF pillars + appendix sections → H1
 - demote_subsections    : Reference architecture / Documentation / Blogs … → H3
@@ -23,7 +27,8 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 
 # -- Generic patterns --------------------------------------------------------
-TOC_HEADING_RE = re.compile(r"^\s*##\s+Table of Contents\s*$", re.IGNORECASE)
+TOC_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(?:Table of )?Contents\s*$",
+                            re.IGNORECASE)
 LIST_ITEM_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+")
 _PAGE_NUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
 _SENTENCE_END = (".", "!", "?", ":", ";", '"', "”", "’", ")", "]", "}")
@@ -101,14 +106,24 @@ def strip_toc(lines):
     i = 0
     while i < len(lines):
         if TOC_HEADING_RE.match(lines[i]):
-            i += 1
-            while i < len(lines):
-                s = lines[i].strip()
-                if s.startswith("|") or s == "":
-                    i += 1
-                else:
-                    break
-            continue
+            # Only treat the heading as a TOC when a table actually
+            # follows -- a prose section that happens to be titled
+            # "Contents" must survive.
+            j = i + 1
+            while j < len(lines) and lines[j].strip() == "":
+                j += 1
+            if j < len(lines) and lines[j].lstrip().startswith("|"):
+                i = j
+                while i < len(lines):
+                    s = lines[i].strip()
+                    # Orphan page-number lines are page-break artifacts
+                    # that land mid-table; stopping at them would leave
+                    # the rest of the TOC table in the document.
+                    if s.startswith("|") or s == "" or _PAGE_NUM_RE.match(s):
+                        i += 1
+                    else:
+                        break
+                continue
         out.append(lines[i])
         i += 1
     return out
@@ -545,10 +560,171 @@ def fix_digit_headings(lines, ruleset="aws"):
     return out
 
 
-def fix_digit_headings_text(text: str) -> str:
+def fix_digit_headings_text(text: str, ruleset: str = "aws") -> str:
     """Apply fix_digit_headings to a full markdown string (convenience for
     callers that work with text rather than line lists)."""
-    return "\n".join(fix_digit_headings(text.splitlines()))
+    return "\n".join(fix_digit_headings(text.splitlines(), ruleset))
+
+
+# -- Numbered-chapter hierarchy (generic rulesets) ----------------------------
+# ML PDF parsers flatten a numbered book's chapter/section/subsection
+# headings to a single level (typically H2):
+#
+#   ## 01              <- chapter number         ## 08 FAULT  <- number took
+#   ## INTRODUCTION    <- chapter title          ## TOLERANCE <- half a title
+#   ## 1.1 From networked systems ...            ## 09 SECURITY
+#   ## 1.1.1 Distributed versus ...              ## COMMUNICATION <- number lost
+#
+# Rebuild the hierarchy from the numbering itself: chapter-number headings
+# merge with their title heading into one H1, dotted section headings take
+# their level from the dot count (N.M -> H2, N.M.K -> H3), an all-caps
+# heading at a numbering boundary is a chapter title whose number heading
+# the parser dropped, and unnumbered headings inside a chapter demote to
+# one level below the numbered section that precedes them.
+#
+# Everything is gated on a document-level "numbered book" signature (enough
+# dotted section headings across enough distinct chapters), so documents
+# without numbered sections pass through untouched -- and every check is
+# fence-aware so code-listing comments can never be mistaken for headings.
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_DOTTED_HEADING_RE = re.compile(r"^(#{1,6})\s+(\d{1,2})((?:\.\d+)+)\s+(\S.*?)\s*$")
+_CHAPTER_NUM_HEADING_RE = re.compile(r"^#{1,6}\s+0*(\d{1,2})(?:\s+(\S.*?))?\s*$")
+_ALLCAPS_HEADING_RE = re.compile(r"^#{1,6}\s+([A-Z][A-Z &-]{2,})\s*$")
+_ANY_HEADING_RE = re.compile(r"^(#{1,6})\s+(\S.*)$")
+
+
+def _fence_mask(lines):
+    """True for every line that belongs to a fenced code block."""
+    mask, in_fence = [], False
+    for line in lines:
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            mask.append(True)
+            continue
+        mask.append(in_fence)
+    return mask
+
+
+def promote_numbered_chapters(lines, doc_title=None,
+                              min_sections=4, min_majors=2):
+    """Rebuild the chapter/section hierarchy of a numbered document.
+
+    No-op unless the document carries at least ``min_sections`` dotted
+    section headings spanning ``min_majors`` distinct chapter numbers.
+    """
+    mask = _fence_mask(lines)
+    n = len(lines)
+
+    dotted = []  # (line index, chapter number, level from dot count)
+    for i, line in enumerate(lines):
+        if mask[i]:
+            continue
+        m = _DOTTED_HEADING_RE.match(line)
+        if m:
+            dotted.append((i, int(m.group(2)), 1 + m.group(3).count(".")))
+    majors = {major for _, major, _ in dotted}
+    if len(dotted) < min_sections or len(majors) < min_majors:
+        return lines
+
+    # Per line: chapter/level of the nearest dotted heading above, and
+    # chapter/line-index of the nearest dotted heading below.
+    prev_major = [None] * n
+    prev_level = [None] * n
+    cur_major = cur_level = None
+    k = 0
+    for i in range(n):
+        prev_major[i], prev_level[i] = cur_major, cur_level
+        if k < len(dotted) and dotted[k][0] == i:
+            cur_major, cur_level = dotted[k][1], dotted[k][2]
+            k += 1
+    next_major = [None] * n
+    next_idx = [None] * n
+    cur_major = cur_idx = None
+    k = len(dotted) - 1
+    for i in range(n - 1, -1, -1):
+        next_major[i], next_idx[i] = cur_major, cur_idx
+        if k >= 0 and dotted[k][0] == i:
+            cur_major, cur_idx = dotted[k][1], dotted[k][0]
+            k -= 1
+
+    title_norm = doc_title.strip().lower() if doc_title else None
+    out, i = [], 0
+    while i < n:
+        line = lines[i]
+        if mask[i] or not line.startswith("#"):
+            out.append(line)
+            i += 1
+            continue
+
+        cm = _CHAPTER_NUM_HEADING_RE.match(line)
+        if cm and int(cm.group(1)) in majors:
+            num = int(cm.group(1))
+            tail = (cm.group(2) or "").strip()
+            last = i
+            # An all-caps heading right below completes the chapter title:
+            # "## 01" + "## INTRODUCTION", "## 08 FAULT" + "## TOLERANCE".
+            if not tail or tail.isupper():
+                j = i + 1
+                while j < n and not lines[j].strip():
+                    j += 1
+                if j < n and not mask[j]:
+                    am = _ALLCAPS_HEADING_RE.match(lines[j])
+                    if am:
+                        tail = f"{tail} {am.group(1).strip()}".strip()
+                        last = j
+            out.append(f"# {num} {tail}".rstrip())
+            i = last + 1
+            continue
+
+        dm = _DOTTED_HEADING_RE.match(line)
+        if dm:
+            level = min(1 + dm.group(3).count("."), 6)
+            out.append(f"{'#' * level} {dm.group(2)}{dm.group(3)} {dm.group(4)}")
+            i += 1
+            continue
+
+        am = _ALLCAPS_HEADING_RE.match(line)
+        if am:
+            text = am.group(1).strip()
+            if title_norm and text.lower() == title_norm:
+                # Duplicate of the book title on the cover pages -- drop
+                # it rather than let it become a bogus chapter.
+                i += 1
+                continue
+            pm, nm = prev_major[i], next_major[i]
+            promote = pm != nm
+            if promote and pm is not None and nm is not None:
+                # Only the LAST all-caps heading before the next numbered
+                # section is the chapter title; earlier ones are trailing
+                # matter of the previous chapter (exercises pages etc.).
+                for j in range(i + 1, next_idx[i]):
+                    if not mask[j] and _ALLCAPS_HEADING_RE.match(lines[j]):
+                        promote = False
+                        break
+            if promote:
+                if pm is not None and nm == pm + 1:
+                    # The parser dropped this chapter's number heading;
+                    # the surrounding numbering tells us what it was.
+                    out.append(f"# {nm} {text}")
+                else:
+                    out.append(f"# {text}")
+            else:
+                out.append(line)
+            i += 1
+            continue
+
+        hm = _ANY_HEADING_RE.match(line)
+        if hm and prev_major[i] is not None and prev_major[i] == next_major[i]:
+            # Unnumbered heading inside a chapter: a sub-topic of the
+            # numbered section above it.
+            level = min((prev_level[i] or 1) + 1, 6)
+            out.append(f"{'#' * level} {hm.group(2)}")
+            i += 1
+            continue
+
+        out.append(line)
+        i += 1
+    return out
 
 
 def apply_corpus_fixes(lines, ruleset):
@@ -574,6 +750,8 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
         lines = promote_pillars_aws(lines)
         lines = demote_subsections_aws(lines)
         lines = indent_lettered_sublists(lines)
+    else:
+        lines = promote_numbered_chapters(lines, doc_title=doc_title)
     lines = heal_list_gaps(lines)
     lines = heal_hyphen_breaks(lines)
     lines = heal_broken_sentences(lines)

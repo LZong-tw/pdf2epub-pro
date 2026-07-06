@@ -457,7 +457,8 @@ def fetch_one(url: str):
 
 
 def fetch_refs(md_in: Path, md_out: Path, *,
-               keep_patterns=None, skip_patterns=None, delay: float | None = None):
+               keep_patterns=None, skip_patterns=None,
+               delay: float | None = None, ruleset: str = "aws"):
     global DELAY
     if delay is not None:
         DELAY = delay
@@ -508,7 +509,7 @@ def fetch_refs(md_in: Path, md_out: Path, *,
     # through the regex rules' `\S` boundary.
     lines = strip_emphasis_inner_space(lines)
     text = "\n".join(lines)
-    md_out.write_text(fix_digit_headings_text(text), encoding="utf-8")
+    md_out.write_text(fix_digit_headings_text(text, ruleset), encoding="utf-8")
     print(f"[fetch-refs] wrote {md_out} with {len(refs)} embedded refs",
           flush=True)
     return len(refs)
