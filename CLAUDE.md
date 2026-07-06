@@ -119,6 +119,11 @@ Tests assume the package is editable-installed; without it imports fail.
   every diagram is silently rewritten to a remote URL.
 - Calibre's flag is `--markdown-extensions`, not `--md-extensions` (silent
   exit-2 if wrong; never assume success from a piped tail).
+- Formula-image fallback must use an EMPTY alt `![](path)`. pandoc's
+  `implicit_figures` turns a non-empty alt on a standalone image into a
+  visible `<figcaption>`; the un-decodable OCR TeX put there renders as
+  garbled caption clutter under every crop. Guarded by
+  `test_apply_formula_image_fallback_uses_empty_alt`.
 
 ## Commit / push
 
