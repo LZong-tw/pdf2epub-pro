@@ -207,8 +207,8 @@ def test_harvest_formula_bboxes_walks_nested_groups():
 # ------------------------------------------------ md rewrite (image fallback)
 def test_apply_formula_image_fallback_replaces_only_unrenderable(tmp_path):
     # A renderable formula stays as math; an un-renderable one becomes an
-    # image crop whose alt text preserves the TeX and whose index picks the
-    # matching bbox (formula_0001 -> boxes[1]).
+    # empty-alt image crop whose index picks the matching bbox
+    # (formula_0001 -> boxes[1]).
     pdf = _mini_pdf(tmp_path, 200, 100)
     boxes = [_box(orig="good"), _box(orig="bad")]
     md = "text\n\n$$GOOD_A$$\n\n$$BAD_B$$\n"
@@ -225,7 +225,7 @@ def test_apply_formula_image_fallback_replaces_only_unrenderable(tmp_path):
     assert n == 1
     assert "$$GOOD_A$$" in out
     assert "$$BAD_B$$" not in out
-    assert "![BAD_B](art/formula_0001.png)" in out
+    assert "![](art/formula_0001.png)" in out
     assert (art / "formula_0001.png").exists()
 
 
@@ -246,7 +246,7 @@ def test_apply_formula_image_fallback_is_fence_aware(tmp_path):
         can_render=lambda b: False,
     )
     assert "$$NOT_MATH$$" in out  # fenced $$ untouched
-    assert "![REAL](art/formula_0000.png)" in out  # real one -> boxes[0]
+    assert "![](art/formula_0000.png)" in out  # real one -> boxes[0]
     assert n == 1
 
 
@@ -264,7 +264,7 @@ def test_apply_formula_image_fallback_leaves_formula_without_bbox(tmp_path):
         dpi=72,
         can_render=lambda b: False,
     )
-    assert "![A](art/formula_0000.png)" in out
+    assert "![](art/formula_0000.png)" in out
     assert "$$B$$" in out
     assert n == 1
 
@@ -318,7 +318,7 @@ def test_apply_formula_image_fallback_skips_inline_code_span(tmp_path):
         can_render=lambda b: False,
     )
     assert f"{tick}$$VAR$${tick}" in out  # code span left verbatim
-    assert "![REAL](art/formula_0000.png)" in out  # real one -> boxes[0]
+    assert "![](art/formula_0000.png)" in out  # real one -> boxes[0]
     assert n == 1
 
 
@@ -353,12 +353,14 @@ def test_apply_formula_image_fallback_leaves_degenerate_bbox(tmp_path):
     assert n == 0
 
 
-def test_apply_formula_image_fallback_alt_is_markdown_safe(tmp_path):
-    # REGRESSION: a body ending in a backslash escaped the closing ] of
-    # ![alt](url) (image lost, media path leaked as text); `*` was parsed as
-    # emphasis.  The alt must be markdown-inert.
+def test_apply_formula_image_fallback_uses_empty_alt(tmp_path):
+    # REGRESSION: the crop reference must use an EMPTY alt.  A non-empty alt
+    # (a copy of the OCR TeX) both (a) surfaced as a garbled pandoc
+    # implicit_figures <figcaption> under every image and (b) could break the
+    # ![alt](url) syntax when the body ended in `\` or held `*`/`]`.  An empty
+    # alt sidesteps both.
     pdf = _mini_pdf(tmp_path, 200, 100)
-    md = "$$a * b \\$$\n"  # body 'a * b \\' -> trailing backslash + asterisk
+    md = "$$a * b \\$$\n"  # body 'a * b \' -> trailing backslash + asterisk
     out, n = apply_formula_image_fallback(
         md,
         pdf,
@@ -369,9 +371,8 @@ def test_apply_formula_image_fallback_alt_is_markdown_safe(tmp_path):
         can_render=lambda b: False,
     )
     assert n == 1
-    assert "](art/formula_0000.png)" in out  # ref intact, ] not escaped away
     ref = out.strip()
-    assert ref.startswith("![") and "\\" not in ref and "*" not in ref
+    assert ref == "![](art/formula_0000.png)"  # empty alt, ref intact
 
 
 def test_apply_formula_image_fallback_memoizes_oracle(tmp_path):

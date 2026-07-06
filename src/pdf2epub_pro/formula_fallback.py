@@ -30,22 +30,6 @@ _DISPLAY_MATH_RE = re.compile(r"\$\$(.+?)\$\$")
 _SEGMENT_RE = re.compile(r"(`+[^`]*`+)|(\$\$.+?\$\$)")
 
 
-def _safe_alt(body):
-    """A markdown-inert alt string for an OCR formula body.
-
-    Collapse whitespace and drop characters that would either break the
-    ``![alt](url)`` syntax (a trailing ``\\`` escapes the closing ``]``; a
-    literal ``]`` closes the alt early) or be parsed by pandoc as markdown
-    (``*`` emphasis, `` ` `` code).  Brackets are shown as parens; everything
-    else (letters, digits, math operators, ``_``) is kept so the alt stays
-    readable.  Never empty.
-    """
-    alt = re.sub(r"\s+", " ", body).strip()
-    alt = alt.replace("\\", " ").replace("`", " ").replace("*", " ")
-    alt = alt.replace("[", "(").replace("]", ")")
-    return re.sub(r"\s+", " ", alt).strip() or "formula"
-
-
 # -- docling JSON -> ordered formula bboxes ---------------------------------
 def _resolve_ref(child, doc):
     # A child link is {"$ref": "#/texts/5"} -> doc["texts"][5].
@@ -272,8 +256,10 @@ def apply_formula_image_fallback(
     markdown in the same order as in the JSON the boxes came from.  A block
     ``can_render`` accepts is left as math; one it rejects is cropped from
     ``pdf_path`` at ``dpi`` into ``media_dir`` and replaced with an
-    ``![<tex>](<media_ref_prefix>/<png>)`` reference (a sanitized copy of the
-    TeX is kept as alt text).  Code-aware: ``$$`` inside a code FENCE or an
+    ``![](<media_ref_prefix>/<png>)`` reference with an empty alt (matching
+    the pipeline's other images; a non-empty alt of un-decodable OCR TeX
+    would only surface as a garbled ``implicit_figures`` caption).  Code-aware:
+    ``$$`` inside a code FENCE or an
     inline code span is ignored and does NOT consume a formula index, so
     alignment survives code that happens to contain ``$$``.  A formula with no
     matching bbox, or whose bbox maps to a degenerate/off-page crop, is left
@@ -335,7 +321,7 @@ def apply_formula_image_fallback(
         png_name = f"{name_prefix}_{i:04d}.png"
         crop_region(page, box).save(media_dir / png_name)
         state["n"] += 1
-        return f"![{_safe_alt(body)}]({media_ref_prefix}/{png_name})"
+        return f"![]({media_ref_prefix}/{png_name})"
 
     try:
         out = [
