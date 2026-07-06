@@ -1,5 +1,6 @@
 """Chunked PDF→Markdown via Docling subprocess (memory-safe for large PDFs)."""
 import argparse
+import json
 import os
 import re
 import shutil
@@ -11,6 +12,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 
 from ._tools import docling_path
+from .formula_fallback import harvest_formula_bboxes
 
 
 def split_pdf(src: Path, chunk_size: int, work_dir: Path):
@@ -30,13 +32,16 @@ def split_pdf(src: Path, chunk_size: int, work_dir: Path):
 
 
 def _docling_cmd(chunk_pdf: Path, out_dir: Path, with_images: bool,
-                 enrich_formula: bool = False):
+                 enrich_formula: bool = False, emit_json: bool = False):
     """Build the docling CLI invocation (extracted so it is unit-testable
     without launching the real ML pipeline)."""
+    # `--to` may be repeated; emitting JSON alongside markdown lets the caller
+    # harvest formula bboxes (for the image-crop fallback) from the same run.
+    to_args = ["--to", "md"] + (["--to", "json"] if emit_json else [])
     return [
         docling_path(), str(chunk_pdf),
         "--pipeline", "standard",
-        "--to", "md",
+        *to_args,
         "--image-export-mode", "referenced" if with_images else "placeholder",
         "--no-enrich-code",
         # Formula OCR is expensive (~+50% wall time) and pointless on
@@ -50,9 +55,10 @@ def _docling_cmd(chunk_pdf: Path, out_dir: Path, with_images: bool,
 
 
 def run_docling(chunk_pdf: Path, out_dir: Path, with_images: bool,
-                enrich_formula: bool = False):
+                enrich_formula: bool = False, emit_json: bool = False):
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1"}
-    cmd = _docling_cmd(chunk_pdf, out_dir, with_images, enrich_formula)
+    cmd = _docling_cmd(chunk_pdf, out_dir, with_images, enrich_formula,
+                       emit_json)
     r = subprocess.run(cmd, env=env, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     if r.returncode != 0:
@@ -113,8 +119,15 @@ def absorb_artifacts(md_text, chunk_out, md_stem, global_artifacts, chunk_index)
 
 def split_pdf_to_md(pdf_path: Path, out_md: Path, chunk_size: int = 20,
                     with_images: bool = True,
-                    enrich_formula: bool = False) -> Path:
-    """Programmatic entry: run the chunked pipeline; returns out_md."""
+                    enrich_formula: bool = False,
+                    emit_json: bool = False) -> Path:
+    """Programmatic entry: run the chunked pipeline; returns out_md.
+
+    When ``emit_json`` is set, docling also produces per-chunk JSON; formula
+    bboxes are harvested in reading order (with global page numbers) and
+    written to a ``<stem>.formulas.json`` sidecar next to ``out_md`` so the
+    image-crop fallback can render un-decodable formulas from the PDF.
+    """
     pdf_path = pdf_path.resolve()
     out_md = out_md.resolve()
     global_artifacts = out_md.with_name(safe_artifacts_dirname(out_md.stem))
@@ -130,13 +143,14 @@ def split_pdf_to_md(pdf_path: Path, out_md: Path, chunk_size: int = 20,
               f"<={chunk_size}  ({'with' if with_images else 'no'} images)", flush=True)
 
         parts = []
+        formula_boxes = []
         for i, (chunk_pdf, start, end) in enumerate(chunks, 1):
             label = f"pages {start+1}-{end}"
             chunk_out = tmp / f"out_{start:05d}"
             chunk_out.mkdir()
             print(f"[{i}/{len(chunks)}] {label} ...", flush=True)
             md = run_docling(chunk_pdf, chunk_out, with_images,
-                             enrich_formula=enrich_formula)
+                             enrich_formula=enrich_formula, emit_json=emit_json)
             if md is None:
                 print(f"[{i}/{len(chunks)}] {label} FAILED", flush=True)
                 parts.append(f"\n<!-- [chunk {label} failed] -->\n")
@@ -146,8 +160,20 @@ def split_pdf_to_md(pdf_path: Path, out_md: Path, chunk_size: int = 20,
                 text = absorb_artifacts(text, chunk_out, md.stem,
                                         global_artifacts, i)
             parts.append(text)
+            if emit_json:
+                cjson = next(iter(chunk_out.glob("*.json")), None)
+                if cjson is not None:
+                    doc = json.loads(cjson.read_text(encoding="utf-8"))
+                    formula_boxes.extend(
+                        harvest_formula_bboxes(doc, page_offset=start))
 
         out_md.write_text("\n\n".join(parts), encoding="utf-8")
+        if emit_json:
+            sidecar = out_md.with_name(f"{out_md.stem}.formulas.json")
+            sidecar.write_text(json.dumps(formula_boxes, ensure_ascii=False),
+                               encoding="utf-8")
+            print(f"[split] harvested {len(formula_boxes)} formula bbox(es) "
+                  f"-> {sidecar.name}", flush=True)
         size_md = out_md.stat().st_size
         size_art = (sum(f.stat().st_size for f in global_artifacts.rglob("*"))
                     if global_artifacts.exists() else 0)

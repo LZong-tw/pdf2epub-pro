@@ -13,15 +13,17 @@ pollute Downloads/Desktop.  Override per-run with ``--build-dir`` or
 permanently with the ``PDF2EPUB_BUILD_ROOT`` environment variable.
 """
 import argparse
+import json
 import shutil
 from pathlib import Path
 
 from . import __version__
-from .split import split_pdf_to_md
+from .split import safe_artifacts_dirname, split_pdf_to_md
 from .tidy import tidy
 from .restore_links import restore_pdf_links
 from .fetch_refs import fetch_refs
 from .make_cover import make_cover, render_pdf_cover
+from .formula_fallback import apply_formula_image_fallback
 from .md2epub import md2epub
 from .md2epub_pandoc import md2epub_pandoc
 from .md2epub_chunked import md2epub_chunked
@@ -77,14 +79,32 @@ def cmd_convert(args):
     # 1. split
     split_pdf_to_md(pdf, raw_md, chunk_size=args.chunk_size,
                     with_images=not args.no_images,
-                    enrich_formula=args.math)
+                    enrich_formula=args.math, emit_json=args.math)
 
     # 2. tidy
-    tidy_md.write_text(
-        tidy(raw_md.read_text(encoding="utf-8"),
-             doc_title=args.title, ruleset=args.ruleset, math=args.math),
-        encoding="utf-8",
-    )
+    tidy_text = tidy(raw_md.read_text(encoding="utf-8"),
+                     doc_title=args.title, ruleset=args.ruleset,
+                     math=args.math)
+
+    # 2b. formula image fallback (under --math): any display formula pandoc
+    #     cannot turn into MathML is cropped straight from the PDF so it ships
+    #     as the author's own typeset image instead of raw TeX text.
+    if args.math and not args.no_formula_image_fallback:
+        sidecar = build / f"{stem}.formulas.json"
+        if sidecar.exists():
+            boxes = json.loads(sidecar.read_text(encoding="utf-8"))
+            art_name = safe_artifacts_dirname(raw_md.stem)
+            tidy_text, n_crop = apply_formula_image_fallback(
+                tidy_text, pdf, boxes, build / art_name,
+                media_ref_prefix=art_name, dpi=args.formula_dpi)
+            if n_crop:
+                print(f"[pdf2epub-pro] formula fallback: cropped {n_crop} "
+                      "un-renderable formula(s) from the PDF")
+        else:
+            print("[pdf2epub-pro] note: --math with no formula bbox sidecar; "
+                  "un-renderable formulas will remain literal $$...$$ text.")
+
+    tidy_md.write_text(tidy_text, encoding="utf-8")
 
     # 3. restore links from PDF annotations
     restore_pdf_links(pdf, tidy_md, linked_md)
@@ -200,6 +220,19 @@ def build_parser():
              "default: it adds ~50%% to parse time and math-free "
              "documents often contain literal '$' that must not be "
              "treated as math delimiters.",
+    )
+    c.add_argument(
+        "--no-formula-image-fallback",
+        action="store_true",
+        help="Disable the --math fallback that crops formulas pandoc cannot "
+             "render as MathML straight from the PDF.  With this flag such "
+             "formulas ship as literal TeX text instead of an image.",
+    )
+    c.add_argument(
+        "--formula-dpi",
+        type=int,
+        default=300,
+        help="Rasterization DPI for the formula image fallback (default 300).",
     )
     c.add_argument("--ruleset", default="aws", choices=["aws", "generic"])
     c.add_argument("--no-fetch-refs", action="store_true")

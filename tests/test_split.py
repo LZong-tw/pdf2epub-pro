@@ -97,7 +97,7 @@ def test_split_pdf_to_md_emits_space_free_refs_for_spaced_stem(tmp_path, monkeyp
         return [(work_dir / "chunk_0.pdf", 0, 1)], 1
 
     def fake_run_docling(chunk_pdf, out_dir, with_images,
-                         enrich_formula=False):
+                         enrich_formula=False, emit_json=False):
         art = out_dir / "c_artifacts"
         art.mkdir()
         png = art / "image_000000_deadbeef.png"
@@ -130,3 +130,14 @@ def test_docling_cmd_formula_toggle(monkeypatch, tmp_path):
                             enrich_formula=True)
     assert "--no-enrich-formula" in off and "--enrich-formula" not in off
     assert "--enrich-formula" in on and "--no-enrich-formula" not in on
+
+
+def test_docling_cmd_emits_json_when_requested(monkeypatch, tmp_path):
+    # REGRESSION: the image-crop formula fallback needs docling's layout
+    # bboxes, which only appear in JSON output.  emit_json must add a second
+    # `--to json` output while keeping the markdown one.
+    monkeypatch.setattr(split, "docling_path", lambda: "docling")
+    off = split._docling_cmd(tmp_path / "c.pdf", tmp_path, True, emit_json=False)
+    on = split._docling_cmd(tmp_path / "c.pdf", tmp_path, True, emit_json=True)
+    assert "md" in off and "json" not in off
+    assert "md" in on and "json" in on
