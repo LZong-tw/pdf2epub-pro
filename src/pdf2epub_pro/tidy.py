@@ -510,7 +510,7 @@ _ENUM_RE = re.compile(r"^(\d+)[.\)]\s+(.+)$")        # "1. Foo" or "1) Foo"
 _PLAIN_NUM_RE = re.compile(r"^(\d+)\s+(.+)$")        # "1 Foo"
 
 
-def fix_digit_headings(lines):
+def fix_digit_headings(lines, ruleset="aws"):
     out = []
     for line in lines:
         # Drop empty / punctuation-only headings — they generate IDs like "-"
@@ -518,7 +518,15 @@ def fix_digit_headings(lines):
         if _EMPTY_HEADING_RE.match(line):
             continue
         m = _NUMERIC_HEADING_RE.match(line)
-        if not m:
+        # Rewriting a numbered heading's *visible text* into "Step N:" /
+        # "Ref." prose is an AWS-runbook nicety, not a generic slug fix:
+        # numbered section headings ("## 1.1 Foo", "## 01") are the norm in
+        # ordinary books/standards, and the markdown->HTML synthesizer's
+        # auto-identifier already derives a valid slug by stripping the
+        # leading digits (pandoc's auto_identifiers + ascii_identifiers). So
+        # only the aws ruleset opts into the prose rewrite; every other
+        # ruleset keeps the heading verbatim.
+        if not m or ruleset != "aws":
             out.append(line)
             continue
         hashes = m.group(1)
@@ -569,7 +577,7 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws") -> st
     lines = heal_list_gaps(lines)
     lines = heal_hyphen_breaks(lines)
     lines = heal_broken_sentences(lines)
-    lines = fix_digit_headings(lines)
+    lines = fix_digit_headings(lines, ruleset)
     lines = un_glue_compounds(lines)
     lines = heal_intra_word_spaces(lines)
     # Strip inner whitespace from emphasis runs BEFORE the adjacency pass,

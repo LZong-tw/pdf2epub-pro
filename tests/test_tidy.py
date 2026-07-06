@@ -337,6 +337,42 @@ def test_fix_digit_headings_drops_punctuation_only():
     assert "## Real heading" in out
 
 
+def test_fix_digit_headings_generic_preserves_numbered_sections():
+    # REGRESSION: converting a numbered book with ruleset=generic must NOT
+    # rewrite "## 1.1 Foo" into "## Ref. 1.1 Foo".  Shipped that way, every
+    # TOC entry in a 685-page textbook read "Ref. N.M ..." (the aws-runbook
+    # "Step/Ref." heading rewrite leaked into the generic default).  Dotted
+    # sections, bare chapter numbers, single enumerators and digit-symbol
+    # headings all pass through verbatim.
+    src = [
+        "## 01",
+        "## 1.1 From networked systems to distributed systems",
+        "## 1.1.1 Distributed versus decentralized systems",
+        "## 1. Identify foo",
+        "##### 24x7 provisioning",
+    ]
+    out = fix_digit_headings(src, ruleset="generic")
+    assert out == src
+
+
+def test_fix_digit_headings_generic_still_drops_punctuation_only():
+    # The punctuation-only drop is a real slug bug, not an aws nicety --
+    # it must fire for every ruleset.
+    src = ["## -", "## 1.1 Real section"]
+    out = fix_digit_headings(src, ruleset="generic")
+    assert "## -" not in out
+    assert "## 1.1 Real section" in out
+
+
+def test_tidy_generic_keeps_numbered_section_headings():
+    # REGRESSION: end-to-end guard on the generic pipeline -- a numbered
+    # section heading survives tidy() untouched (no "Ref." prefix).
+    src = "## 1.1 From networked systems\n\nbody text.\n"
+    out = tidy(src, ruleset="generic")
+    assert "## 1.1 From networked systems" in out.splitlines()
+    assert "Ref. 1.1" not in out
+
+
 # ----------------------------------------------------------- lettered sublist
 
 
