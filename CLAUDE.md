@@ -55,10 +55,13 @@ publisher-specific behavior into defaults. When adding rules / detectors:
 Pipeline: `split → tidy → restore-links → fetch-refs → cover → md2epub_{backend}`
 
 - `split.py` — PDF chunking via Docling
-- `tidy.py` — markdown cleanup (mojibake, hyphenation, list gaps, …)
+- `tidy.py` — markdown cleanup (mojibake, hyphenation, list gaps, …);
+  generic rulesets also rebuild the numbered-chapter hierarchy that
+  ML parsers flatten to a single heading level
 - `restore_links.py` — re-attach lost hyperlinks from PDF annotations
 - `fetch_refs.py` — fetch external refs into appendix via trafilatura
-- `make_cover.py` — PIL procedural cover
+- `make_cover.py` — cover images: PDF page-1 rasterization (default,
+  `--cover-source`) or PIL procedural cover
 - **`md2epub_pandoc.py`** — pandoc-based synthesizer (DEFAULT). ~30×
   faster than Calibre on large books, 0-error audit parity after the
   `+ascii_identifiers` reader extension + EPUB-level dedupe-id post-pass.
