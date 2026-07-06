@@ -18,6 +18,7 @@ from pdf2epub_pro.tidy import (
     strip_emphasis_inner_space,
     strip_orphan_dashes,
     escape_prose_dollars,
+    wrap_aligned_math,
     strip_placeholder_image_alt,
     strip_orphan_page_numbers,
     strip_toc,
@@ -761,3 +762,42 @@ def test_tidy_without_math_leaves_dollars_literal():
     out = tidy(src, ruleset="generic", math=False)
     assert "$5" in out and "done$" in out
     assert "\\$" not in out
+
+
+
+# ------------------------------------------------- aligned-equation wrapping
+def test_wrap_aligned_math_wraps_bare_alignment():
+    # REGRESSION: docling emits multi-line derivations with bare & and \\;
+    # pandoc rejected them and dumped raw TeX.  Wrap in aligned -> MathML.
+    src = [r"$$\overline{N} & = \sum_k k p_k \\ & = \frac{U}{1-U}$$"]
+    out = wrap_aligned_math(src)
+    assert out[0] == (
+        r"$$\begin{aligned}\overline{N} & = \sum_k k p_k \\ "
+        r"& = \frac{U}{1-U}\end{aligned}$$"
+    )
+
+
+def test_wrap_aligned_math_leaves_plain_formula():
+    src = [r"$$n = -\frac{m}{k}\ln(1-x)$$"]
+    assert wrap_aligned_math(src) == src
+
+
+def test_wrap_aligned_math_skips_existing_environment():
+    # Already carries its own environment -> never double-wrap.
+    src = [r"$$v \leftarrow \begin{cases} 1 & a \\ 0 & b \end{cases}$$"]
+    assert wrap_aligned_math(src) == src
+
+
+def test_wrap_aligned_math_skips_fenced_code():
+    src = [chr(96) * 3, r"echo $$a & b$$", chr(96) * 3]
+    assert wrap_aligned_math(src) == src
+
+
+def test_tidy_math_wraps_then_escapes(tmp_path=None):
+    # Full math pipeline order: aligned wrap happens, prose $ still escaped,
+    # the display block stays a single $$...$$ token.
+    src = "Cost is $5.\n\n" + r"$$a & = b \\ c & = d$$" + "\n"
+    out = tidy(src, ruleset="generic", math=True)
+    assert r"\begin{aligned}" in out
+    assert r"\$5" in out           # prose dollar escaped
+    assert out.count("$$") == 2     # exactly one display block, intact

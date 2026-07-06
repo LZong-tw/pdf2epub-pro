@@ -755,6 +755,37 @@ def apply_corpus_fixes(lines, ruleset):
     return out
 
 
+# -- Aligned-equation wrapping (only under --math) ---------------------------
+# Docling formula OCR emits multi-line aligned derivations with bare `&`
+# column separators and `\\` row breaks, but WITHOUT the environment that
+# makes them legal -- e.g. `$$\overline{N} & = \sum ... \\ ...$$`.  Pandoc's
+# math reader rejects a bare `&`/`\\` outside an environment and falls back
+# to dumping the raw TeX as text.  Wrapping such a block in
+# `\begin{aligned}...\end{aligned}` makes it valid and pandoc renders MathML.
+# Skipped when the block already carries its own environment (cases, array,
+# matrix ...) so we never double-wrap.
+_DISPLAY_MATH_RE = re.compile(r"\$\$(.+?)\$\$")
+
+
+def _maybe_wrap_aligned(m):
+    body = m.group(1)
+    has_align = ("&" in body) or ("\\" + "\\" in body)
+    if has_align and (r"\begin{" not in body):
+        return r"$$\begin{aligned}" + body + r"\end{aligned}$$"
+    return m.group(0)
+
+
+def wrap_aligned_math(lines):
+    """Wrap bare aligned equations ($$...&...\\...$$ with no environment) in
+    \\begin{aligned}. Fence-aware; display math is single-line in docling
+    output so per-line substitution is sufficient."""
+    mask = _fence_mask(lines)
+    return [
+        line if mask[i] else _DISPLAY_MATH_RE.sub(_maybe_wrap_aligned, line)
+        for i, line in enumerate(lines)
+    ]
+
+
 # -- Math-safe dollar escaping (only under --math) ---------------------------
 # When --math turns on pandoc's tex_math_dollars, a bare '$' becomes a math
 # delimiter.  Prose routinely carries literal '$' ("costs $5", "a done$
@@ -820,7 +851,9 @@ def tidy(text: str, *, doc_title: str | None = None, ruleset: str = "aws",
     lines = normalize_relative_links(lines)
     lines = apply_corpus_fixes(lines, ruleset)
     if math:
-        # Last, so nothing downstream re-introduces a bare '$'.
+        # Wrap bare aligned equations so pandoc emits MathML, THEN escape
+        # prose dollars last so nothing re-introduces a bare '$'.
+        lines = wrap_aligned_math(lines)
         lines = escape_prose_dollars(lines)
     return "\n".join(lines) + "\n"
 
