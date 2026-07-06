@@ -21,7 +21,7 @@ from .split import split_pdf_to_md
 from .tidy import tidy
 from .restore_links import restore_pdf_links
 from .fetch_refs import fetch_refs
-from .make_cover import make_cover
+from .make_cover import make_cover, render_pdf_cover
 from .md2epub import md2epub
 from .md2epub_pandoc import md2epub_pandoc
 from .md2epub_chunked import md2epub_chunked
@@ -96,23 +96,43 @@ def cmd_convert(args):
     else:
         final_md = linked_md
 
-    # 5. cover (if not disabled)
+    # 5. cover (if not disabled).  Default source is the PDF's own first
+    #    page -- born-digital PDFs almost always carry the real cover
+    #    there.  Any --cover-* styling flag (or --cover-source generated)
+    #    opts into the procedural cover instead.
     cover_arg = None
     if not args.no_cover:
-        # Cover text falls back to --title if no --cover-title supplied.
-        # Use '|' inside --cover-title to break the cover heading across
-        # multiple lines without polluting the EPUB metadata title.
-        cover_text = args.cover_title or args.title or stem
-        title_lines = cover_text.split("|")
-        make_cover(
-            cover_path,
-            super_title=args.cover_super or "",
-            main_title=title_lines,
-            subtitle=args.cover_subtitle or "",
-            publisher=args.authors or "",
-            variant=args.cover_variant,
-        )
-        cover_arg = cover_path
+        wants_generated = bool(args.cover_title or args.cover_super
+                               or args.cover_subtitle
+                               or args.cover_variant != "pillars")
+        source = args.cover_source
+        if source == "auto":
+            source = "generated" if wants_generated else "pdf"
+        if source == "pdf":
+            try:
+                render_pdf_cover(pdf, cover_path)
+                cover_arg = cover_path
+            except Exception as exc:
+                if args.cover_source == "pdf":
+                    raise
+                print(f"[cover] page-1 render failed ({exc}); "
+                      "falling back to the generated cover")
+        if cover_arg is None:
+            # Cover text falls back to --title if no --cover-title
+            # supplied.  Use '|' inside --cover-title to break the cover
+            # heading across multiple lines without polluting the EPUB
+            # metadata title.
+            cover_text = args.cover_title or args.title or stem
+            title_lines = cover_text.split("|")
+            make_cover(
+                cover_path,
+                super_title=args.cover_super or "",
+                main_title=title_lines,
+                subtitle=args.cover_subtitle or "",
+                publisher=args.authors or "",
+                variant=args.cover_variant,
+            )
+            cover_arg = cover_path
 
     # 6. md → EPUB via the selected synthesizer (default: pandoc — see
     #    _SYNTHESIZERS for trade-off notes).
@@ -172,6 +192,15 @@ def build_parser():
     c.add_argument("--no-cover", action="store_true")
     c.add_argument("--cover-variant", default="pillars",
                    choices=["pillars", "graph"])
+    c.add_argument(
+        "--cover-source",
+        default="auto",
+        choices=["auto", "pdf", "generated"],
+        help="'pdf' rasterizes the PDF's first page (the book's real "
+             "cover), 'generated' draws the procedural cover, 'auto' "
+             "(default) uses the PDF page unless a --cover-* styling "
+             "flag asks for a generated one.",
+    )
     c.add_argument("--cover-title",
                    help="Cover heading text; use '|' for line breaks. "
                         "Defaults to --title if omitted.")

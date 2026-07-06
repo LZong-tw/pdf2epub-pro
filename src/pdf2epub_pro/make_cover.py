@@ -1,8 +1,12 @@
-"""Procedurally generate a portrait EPUB cover (1600×2400 JPEG).
+"""EPUB cover images.
 
-No AI required — deterministic geometric design with configurable text + color
-palette. Two ornament variants ("pillars" hexagonal, "graph" with overlaid
-ascending line graph).
+Two sources:
+- render_pdf_cover : rasterize the PDF's first page — the book's real
+  cover — as the cover image (pipeline default).
+- make_cover       : procedurally generate a portrait cover (1600×2400
+  JPEG).  No AI required — deterministic geometric design with
+  configurable text + color palette.  Two ornament variants ("pillars"
+  hexagonal, "graph" with overlaid ascending line graph).
 """
 import argparse
 import math
@@ -134,6 +138,31 @@ def make_cover(out_path, *, super_title, main_title, subtitle,
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path, "JPEG", quality=92, optimize=True)
     print(f"wrote {out_path} ({Path(out_path).stat().st_size:,} bytes)")
+
+
+def render_pdf_cover(pdf_path, out_path, *, page_index=0,
+                     target_width=W, quality=90):
+    """Rasterize a PDF page (default: the first) as the cover image.
+
+    Born-digital PDFs almost always carry the book's real cover on page
+    one; rendering it beats drawing a procedural stand-in.  pypdfium2 is
+    imported lazily so the procedural path keeps working without it.
+    """
+    import pypdfium2 as pdfium
+
+    out_path = Path(out_path)
+    doc = pdfium.PdfDocument(str(pdf_path))
+    try:
+        if len(doc) == 0:
+            raise ValueError(f"{pdf_path}: PDF has no pages")
+        page = doc[page_index]
+        width_pt, _ = page.get_size()
+        scale = target_width / width_pt
+        image = page.render(scale=scale).to_pil().convert("RGB")
+    finally:
+        doc.close()
+    image.save(out_path, "JPEG", quality=quality)
+    return out_path
 
 
 def main(argv=None):
